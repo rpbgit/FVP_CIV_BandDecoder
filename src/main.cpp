@@ -2,17 +2,19 @@
 
 /*
 7-Oct-2025 Wa9fvP    v1.1  removed unused #defines.  Deleted commeted stuff at the battom . 
-
+14-Oct-2025 Wa9fvP    v1.1.1 added  version.
 
 */
 
 
 //=====[ Settings ]===========================================================================================
+// REMEMBER TO UPDATE VERSION NUMBER !!!! 
+#define VERSION     "1.1.1"  // software version
 
 #define CIVBAUD      9600  // [baud] Serial port CIV in/out baudrate  IC-705
 //#define CIVBAUD        19200  // [baud] Serial port CIV in/out baudrate
-//#define CIV_adress   0xA4  // CIV input HEX Icom adress (0x is prefix) 0xA4 = IC-705
-#define CIV_adress   0x94  // CIV input HEX Icom adress (0x is prefix) 0xA4 = IC-7300
+//#define CIV_address   0xA4  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
+#define CIV_address   0x94  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-7300
 
 bool icomSM2(uint8_t b, unsigned long * freq);  // prototype for fwd ref
     
@@ -32,8 +34,12 @@ void setup() {
     // PORTx.OUT → write all pins on a port
     // PORTx.OUTSET → set selected pins HIGH
     // PORTx.OUTCLR → clear selected pins LOW
-    // PORTx.OUTTGL → toggle selected pins     
-    Serial.println("Band decoder started");
+    // PORTx.OUTTGL → toggle selected pins   
+
+    Serial.print(F("\nBand decoder started"));
+    Serial.print(F(" Version: ")); Serial.print(VERSION);
+    Serial.print(F(" CIV Baud: ")); Serial.println(CIVBAUD);
+    Serial.print(F("Compiled on: ")); Serial.print(__DATE__); Serial.print(F(" ")); Serial.println(__TIME__);
 
 }
     
@@ -133,9 +139,9 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     case 2: if (b == 0xFE) { state = 3; rcvBuff[1] = b; } else { state = 1; }; break;
         // adresses that use different software 00-trx, e0-pc-ale, winlinkRMS, f1-winlink trimode
     case 3: if (b == 0x00 || b == 0xE0 || b == 0xF1) { state = 4; rcvBuff[2] = b; }
-          else if (b == CIV_adress)                  { state = 6; rcvBuff[2] = b; }
+          else if (b == CIV_address)                  { state = 6; rcvBuff[2] = b; }
           else { state = 1; }; break;                      
-    case 4: if (b == CIV_adress) { state = 5; rcvBuff[3] = b; }
+    case 4: if (b == CIV_address) { state = 5; rcvBuff[3] = b; }
           else { state = 1; }; break;                      // select command $03
     case 5: if (b == 0x00 || b == 0x03) { state = 8; rcvBuff[4] = b; }
           else { state = 1; }; break;
