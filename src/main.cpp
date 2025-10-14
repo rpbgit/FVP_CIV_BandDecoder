@@ -1,21 +1,36 @@
 #include <Arduino.h>
 
+// a debug widget to stop/hold further execution of the code until we get sent something from the host
+// it will also print out the line of source code it is being executed in.
+void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INSTEAD`
+    while(Serial.read() != -1){;}
+    while(!Serial.available()){;}   // spin here waiting for something from the pc to be sent.
+    delay(100);
+    while(Serial.read() != -1){;}  // gobble up any chars in the input buffer, then go on
+}
+    
+// add this macro to any line of code you want to stop at for debugging, hit any key to continue execution
+// example:  int x = 5; stall();
+#define stall() Serial.print("Stall @ line #");Serial.println(__LINE__);_stall();
+    
 /*
-7-Oct-2025 Wa9fvP    v1.1  removed unused #defines.  Deleted commeted stuff at the battom . 
-14-Oct-2025 Wa9fvP    v1.1.1 added  version.
-
-*/
-
+7-Oct-2025 Wa9fvP   v1.1  removed unused #defines.  Deleted commeted stuff at the battom . 
+14-Oct-2025 ZV      v1.1.1 added  version info and printout, allow 7300 and 705 default addresses.
+15-Oct-2025 ZV      v1.1.2 fix BCD check in state machine to properly validate BCD upper nibble.
+*/    
+// REMEMBER TO UPDATE VERSION NUMBER !!!! 
+#define VERSION     "1.1.2"  // software version
 
 //=====[ Settings ]===========================================================================================
-// REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "1.1.1"  // software version
-
 #define CIVBAUD      9600  // [baud] Serial port CIV in/out baudrate  IC-705
 //#define CIVBAUD        19200  // [baud] Serial port CIV in/out baudrate
-//#define CIV_address   0xA4  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
-#define CIV_address   0x94  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-7300
 
+#define CIV_ADDR_705  0xA4  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
+#define CIV_ADDR_7300 0x94  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7300
+#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)==CIV_ADDR_7300)) // macro to check if address is valid
+
+//=====[ End Settings ]========================================================================================
+// the icom CIV state machine function prototype
 bool icomSM2(uint8_t b, unsigned long * freq);  // prototype for fwd ref
     
 void setup() {
@@ -24,7 +39,7 @@ void setup() {
     delay(100);
     Serial1.begin(CIVBAUD);   // Serial1 for CIV D0-D1
     Serial1.setTimeout(10);
-    delay(5000);
+    delay(2000); // allow enough time on VSCode/PIO for the serial monitor to connect/startup after build and upload.
 
     //=====[ Set pin mode ]===================================================================================
     // using direct port manipulation for fast operation and atomic (all bits in byte)
@@ -36,7 +51,7 @@ void setup() {
     // PORTx.OUTCLR → clear selected pins LOW
     // PORTx.OUTTGL → toggle selected pins   
 
-    Serial.print(F("\nBand decoder started"));
+    Serial.print(F("\nCIV Band decoder started"));
     Serial.print(F(" Version: ")); Serial.print(VERSION);
     Serial.print(F(" CIV Baud: ")); Serial.println(CIVBAUD);
     Serial.print(F("Compiled on: ")); Serial.print(__DATE__); Serial.print(F(" ")); Serial.println(__TIME__);
@@ -139,9 +154,9 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     case 2: if (b == 0xFE) { state = 3; rcvBuff[1] = b; } else { state = 1; }; break;
         // adresses that use different software 00-trx, e0-pc-ale, winlinkRMS, f1-winlink trimode
     case 3: if (b == 0x00 || b == 0xE0 || b == 0xF1) { state = 4; rcvBuff[2] = b; }
-          else if (b == CIV_address)                  { state = 6; rcvBuff[2] = b; }
+          else if ( CIV_ADDRESSES_MATCH(b) ) { state = 6; rcvBuff[2] = b; }
           else { state = 1; }; break;                      
-    case 4: if (b == CIV_address) { state = 5; rcvBuff[3] = b; }
+    case 4: if ( CIV_ADDRESSES_MATCH(b) ) { state = 5; rcvBuff[3] = b; }
           else { state = 1; }; break;                      // select command $03
     case 5: if (b == 0x00 || b == 0x03) { state = 8; rcvBuff[4] = b; }
           else { state = 1; }; break;
@@ -153,15 +168,15 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
 
         // next five bytes are frequency data, must ensure only valid packed BCD data (each nibble <= 0-9), or toss the frame
         // this is the most efficient way to check for valid BCD i could think of
-    case 8:  if ((b & 0xF0) <= 0x90 && (b & 0x0F) <= 0x09) { state = 9;  rcvBuff[5] = b; }
+    case 8:  if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 9;  rcvBuff[5] = b; }
           else { state = 1; }; break;
-    case 9:  if ((b & 0xF0) <= 0x90 && (b & 0x0F) <= 0x09) { state = 10; rcvBuff[6] = b; }
+    case 9:  if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 10; rcvBuff[6] = b; }
           else { state = 1; }; break;
-    case 10: if ((b & 0xF0) <= 0x90 && (b & 0x0F) <= 0x09) { state = 11; rcvBuff[7] = b; }
+    case 10: if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 11; rcvBuff[7] = b; }
            else { state = 1; }; break;
-    case 11: if ((b & 0xF0) <= 0x90 && (b & 0x0F) <= 0x09) { state = 12; rcvBuff[8] = b; }
+    case 11: if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 12; rcvBuff[8] = b; }
            else { state = 1; }; break;
-    case 12: if ((b & 0xF0) <= 0x90 && (b & 0x0F) <= 0x09) { state = 13; rcvBuff[9] = b; }
+    case 12: if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 13; rcvBuff[9] = b; }
            else { state = 1; }; break;
     case 13: if (b == 0xFD) { state = 1; rcvBuff[10] = b; }
            else { state = 1; rcvBuff[10] = 0; }; break; // 0xFD is frame end byte
