@@ -1,0 +1,386 @@
+#include <Arduino.h>
+#include <avr/io.h>
+
+/*
+11-Oct-2025 Wa9fvP v1.9.3 - Added stall() between tests, test names/IDs, fixed PA1 pullup, maintained IN0 direct IO
+*/
+
+#define CIVBAUD      9600  // [baud] Serial port CIV in/out baudrate IC-7300
+#define CIV_adress   0x94  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7300
+
+// bool icomSM2(uint8_t b, unsigned long *freq);  // prototype for fwd ref
+void CCL_init();
+void force_reset_state();
+void dumpccl();
+void probe_IN0();
+void probe_IN1();
+void probe_IN2_hold(bool seedHigh);
+
+void _stall() {
+  while (Serial.read() != -1) {;}
+  while (!Serial.available()) {;}
+  delay(100);
+  while (Serial.read() != -1) {;}
+}
+#define stall() Serial.print("Stall @ line #"); Serial.println(__LINE__); _stall();
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+  // Serial1.begin(CIVBAUD); // Disabled to rule out interference
+  Serial1.setTimeout(10);
+  delay(3000);
+  Serial.println("Version 1.9.3");
+
+  // Debug: Print EVSYS constant
+  Serial.print(F("EVSYS_GENERATOR_PORT0_PIN0_gc=0x")); Serial.println(EVSYS_GENERATOR_PORT0_PIN0_gc, HEX);
+
+  // Initialize band decoder outputs (A3-A0, VPORTD for portability)
+  VPORTD.DIR = 0x0F; // PD0-PD3 as outputs for band decoder (D3-D6)
+  VPORTD.OUT = 0x00; // Clear outputs
+
+  // Test 1: PA1 (D7) pullup and GPIO
+  Serial.println(F("\n[TEST_PA1_PULLUP] Testing PA1 (D7) pullup and GPIO..."));
+  PORTA.DIRCLR = 0x02; // PA1 input
+  PORTA.OUTCLR = 0x02; // Clear output
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80; // Pullup + inversion
+  delay(10);
+  Serial.print(F("PA1 pullup check=")); Serial.println((PORTA.IN & 0x02) ? 1 : 0);
+  PORTA.DIRSET = 0x02; // PA1 output
+  PORTA.OUTCLR = 0x02; // Force low
+  delay(10);
+  Serial.print(F("PA1 GPIO low=")); Serial.println((PORTA.IN & 0x02) ? 1 : 0);
+  PORTA.OUTSET = 0x02; // Force high
+  delay(10);
+  Serial.print(F("PA1 GPIO high=")); Serial.println((PORTA.IN & 0x02) ? 1 : 0);
+  PORTA.DIRCLR = 0x02; // Back to input
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80;
+  Serial.print(F("PA1 pullup after=")); Serial.println((PORTA.IN & 0x02) ? 1 : 0);
+  Serial.println(F("[TEST_PA1_PULLUP] Complete. Measure D7 (PA1) voltage."));
+  stall();
+
+  // Test 2: A5 (PA3) as GPIO
+  Serial.println(F("\n[TEST_A5_GPIO] Testing A5 (PA3) as GPIO..."));
+  TWI0.MCTRLA = 0; // Disable I2C to free A4/A5
+  PORTA.DIRSET = 0x08;
+  PORTA.OUTSET = 0x08;
+  delay(10);
+  Serial.print(F("A5 high readback: "));
+  Serial.println((PORTA.IN & 0x08) ? 1 : 0);
+  PORTA.OUTCLR = 0x08;
+  delay(10);
+  Serial.print(F("A5 low readback: "));
+  Serial.println((PORTA.IN & 0x08) ? 1 : 0);
+  Serial.println(F("[TEST_A5_GPIO] Complete. Measure A5 (PA3) voltage."));
+  stall();
+
+  // Test 3: IN0 (PA0/D2 as Reset via direct IO)
+  Serial.println(F("\n[TEST_IN0] Testing IN0 (PA0/D2 as Reset)..."));
+  Serial.print(F("PORTA.IN = 0x")); Serial.println(PORTA.IN, HEX);
+  dumpccl();
+  probe_IN0();
+  dumpccl();
+  Serial.println(F("Ground D2 and observe A5 (should follow D2: low=1, high=0)"));
+  Serial.println(F("[TEST_IN0] Complete. Measure D2 (PA0) and A5 (PA3) voltages."));
+  stall();
+
+  // Test 4: IN1 (PA1/D7 as Set)
+  Serial.println(F("\n[TEST_IN1] Testing IN1 (PA1/D7 as Set)..."));
+  Serial.print(F("PORTA.IN = 0x")); Serial.println(PORTA.IN, HEX);
+  dumpccl();
+  probe_IN1();
+  dumpccl();
+  Serial.println(F("Ground D7 and observe A5 (should follow D7: low=1, high=0)"));
+  Serial.println(F("[TEST_IN1] Complete. Measure D7 (PA1) and A5 (PA3) voltages."));
+  stall();
+
+  // Test 5: IN2 feedback (seed high)
+  Serial.println(F("\n[TEST_IN2_HIGH] Testing IN2 feedback (seed high)..."));
+  Serial.print(F("PORTA.IN = 0x")); Serial.println(PORTA.IN, HEX);
+  dumpccl();
+  probe_IN2_hold(true);
+  Serial.println(F("A5 seeded high, check if holds"));
+  dumpccl();
+  Serial.println(F("[TEST_IN2_HIGH] Complete. Measure A5 (PA3) voltage."));
+  stall();
+
+  // Test 6: IN2 feedback (seed low)
+  Serial.println(F("\n[TEST_IN2_LOW] Testing IN2 feedback (seed low)..."));
+  Serial.print(F("PORTA.IN = 0x")); Serial.println(PORTA.IN, HEX);
+  dumpccl();
+  probe_IN2_hold(false);
+  Serial.println(F("A5 seeded low, check if holds"));
+  dumpccl();
+  Serial.println(F("[TEST_IN2_LOW] Complete. Measure A5 (PA3) voltage."));
+  stall();
+
+  // Test 7: Initialize CCL RS latch
+  Serial.println(F("\n[TEST_CCL_INIT] Initializing CCL RS latch..."));
+  dumpccl();
+  CCL_init();
+  force_reset_state();
+  dumpccl();
+  Serial.println(F("CCL ready. Ground D7 to set (A5 high), D2 to reset (A5 low)."));
+  Serial.println(F("[TEST_CCL_INIT] Complete."));
+  stall();
+
+  // Test 8: Post-initialization latch test
+  Serial.println(F("\n[TEST_LATCH] Testing latch: ground D7 (A5 high), D2 (A5 low), release both (hold state)..."));
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80; // Re-apply with inversion
+  for (int i = 0; i < 10; i++) {
+    Serial.print(F("Test cycle "));
+    Serial.print(i + 1);
+    Serial.println(F(": ground D7/D2 as needed, then press key."));
+    Serial.print(F("PA0=")); Serial.print((PORTA.IN & 0x01) ? 1 : 0);
+    Serial.print(F(" PA1=")); Serial.print((PORTA.IN & 0x02) ? 1 : 0);
+    Serial.print(F(" A5=")); Serial.println((PORTA.IN & 0x08) ? 1 : 0);
+    stall();
+  }
+  Serial.println(F("[TEST_LATCH] Complete. Entering loop."));
+  stall();
+}
+
+void CCL_init() {
+  // Disable I2C to free A4/A5
+  TWI0.MCTRLA = 0;
+
+  // Configure PA0 (D2) and PA1 (D7) as inputs with pullups and inversion
+  PORTA.DIRCLR = 0x03;
+  PORTA.OUTCLR = 0x03; // Clear outputs
+  PORTA.PIN0CTRL = PORT_PULLUPEN_bm | 0x80; // Inversion for active-low
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80; // Inversion for active-low
+
+  // A5 (PA3) as output
+  PORTA.DIRSET = 0x08;
+
+  // Route LUT0 to PA3 (A5)
+  PORTMUX.CCLROUTEA = 0x00; // Alternatives: 0x01 (PD0/D5), 0x04 (PF2/A0)
+
+  // Disable and reset CCL
+  CCL.CTRLA = 0;
+  CCL.LUT0CTRLA = 0;
+  CCL.LUT0CTRLB = 0;
+  CCL.LUT0CTRLC = 0;
+  CCL.TRUTH0 = 0;
+
+  // Debug: Print CCL constants
+  Serial.print(F("CCL_INSEL0_EVENTA_gc=0x")); Serial.println(CCL_INSEL0_EVENTA_gc, HEX);
+  Serial.print(F("CCL_INSEL1_IO_gc=0x")); Serial.println(CCL_INSEL1_IO_gc, HEX);
+
+  // Ensure peripheral clock is enabled
+  CLKCTRL.MCLKCTRLB &= ~CLKCTRL_PEN_bm; // Disable prescaler
+  Serial.print(F("CLKCTRL.MCLKCTRLB=0x")); Serial.println(CLKCTRL.MCLKCTRLB, HEX);
+
+  // Reset all EVSYS channels
+  EVSYS.CHANNEL0 = 0;
+  EVSYS.CHANNEL1 = 0;
+  EVSYS.CHANNEL2 = 0;
+  EVSYS.CHANNEL3 = 0;
+  EVSYS.CHANNEL4 = 0;
+  EVSYS.CHANNEL5 = 0;
+  EVSYS.CHANNEL6 = 0;
+  EVSYS.CHANNEL7 = 0;
+  EVSYS.USERCCLLUT0A = 0;
+  EVSYS.STROBE = 0;
+  Serial.print(F("EVSYS.CHANNEL0 before=0x")); Serial.println(EVSYS.CHANNEL0, HEX);
+  // Configure Event System for IN0 (PA0/D2)
+  for (uint8_t i = 0; i < 3; i++) {
+    EVSYS.CHANNEL0 = 0x03; // Explicit PORTA_PIN0
+    delay(1);
+    if (EVSYS.CHANNEL0 == 0x03) break;
+    Serial.print(F("EVSYS.CHANNEL0 retry "));
+    Serial.println(i + 1);
+  }
+  EVSYS.USERCCLLUT0A = 0x01; // Channel 0 to LUT0A
+  EVSYS.STROBE = 1;
+  delay(10);
+  Serial.print(F("EVSYS.CHANNEL0 after=0x")); Serial.println(EVSYS.CHANNEL0, HEX);
+
+  // Configure LUT0 for RS latch (active low)
+  // IN0 = EVENTA (PA0/D2, Reset: low=1)
+  // IN1 = IO (PA1/D7, Set: low=1)
+  // IN2 = FEEDBACK
+  CCL.LUT0CTRLB = 0x05; // IN0=EVENTA, IN1=IO
+  CCL.LUT0CTRLC = 0x01; // IN2=FEEDBACK
+  CCL.TRUTH0 = 0xD2; // 11010010b
+  CCL.LUT0CTRLA = 0x11; // OUTEN | ENABLE
+  CCL.CTRLA = 0x01; // ENABLE
+  delay(10);
+}
+
+void force_reset_state() {
+  CCL.CTRLA = 0;
+  PORTA.DIRSET = 0x08 | 0x01; // PA3 (A5) and PA0 (D2)
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80; // Re-apply with inversion
+  PORTA.OUTCLR = 0x08; // Force Q=0
+  PORTA.OUTCLR = 0x01; // Force Reset
+  delay(5);
+  PORTA.OUTSET = 0x01;
+  PORTA.DIRCLR = 0x01;
+  PORTA.DIRSET = 0x08;
+  // Reset all EVSYS channels
+  EVSYS.CHANNEL0 = 0;
+  EVSYS.CHANNEL1 = 0;
+  EVSYS.CHANNEL2 = 0;
+  EVSYS.CHANNEL3 = 0;
+  EVSYS.CHANNEL4 = 0;
+  EVSYS.CHANNEL5 = 0;
+  EVSYS.CHANNEL6 = 0;
+  EVSYS.CHANNEL7 = 0;
+  EVSYS.USERCCLLUT0A = 0;
+  EVSYS.STROBE = 0;
+  Serial.print(F("EVSYS.CHANNEL0 before=0x")); Serial.println(EVSYS.CHANNEL0, HEX);
+  for (uint8_t i = 0; i < 3; i++) {
+    EVSYS.CHANNEL0 = 0x03; // Explicit PORTA_PIN0
+    delay(1);
+    if (EVSYS.CHANNEL0 == 0x03) break;
+    Serial.print(F("EVSYS.CHANNEL0 retry "));
+    Serial.println(i + 1);
+  }
+  EVSYS.USERCCLLUT0A = 0x01;
+  EVSYS.STROBE = 1;
+  delay(10);
+  Serial.print(F("EVSYS.CHANNEL0 after=0x")); Serial.println(EVSYS.CHANNEL0, HEX);
+  CCL.LUT0CTRLB = 0x05; // IN0=EVENTA, IN1=IO
+  CCL.LUT0CTRLA = 0x11; // OUTEN | ENABLE
+  CCL.CTRLA = 0x01; // ENABLE
+  delay(10);
+}
+
+void probe_IN0() {
+  CCL.CTRLA = 0;
+  CCL.LUT0CTRLA = 0;
+  CCL.LUT0CTRLB = 0;
+  CCL.LUT0CTRLC = 0;
+  CCL.TRUTH0 = 0;
+  PORTA.DIRCLR = 0x01; // PA0 input
+  PORTA.OUTCLR = 0x01; // Clear output
+  PORTA.PIN0CTRL = PORT_PULLUPEN_bm | 0x80; // Inversion for active-low
+  PORTA.DIRSET = 0x08; // PA3 output
+  Serial.print(F("PORTA.PIN0CTRL=0x")); Serial.println(PORTA.PIN0CTRL, HEX);
+  Serial.print(F("PORTA.DIR=0x")); Serial.println(PORTA.DIR, HEX);
+  Serial.print(F("PORTA.IN before=0x")); Serial.println(PORTA.IN, HEX);
+  Serial.print(F("A5 before=")); Serial.println((PORTA.IN & 0x08) ? 1 : 0);
+  PORTMUX.CCLROUTEA = 0x00;
+  // Use direct IO to test IN0 (bypass EVSYS issue)
+  CCL.LUT0CTRLB = 0x01; // IN0=IO (PA0)
+  CCL.LUT0CTRLC = 0x00;
+  CCL.TRUTH0 = 0xAA; // OUT=IN0
+  CCL.LUT0CTRLA = 0x11; // OUTEN | ENABLE
+  CCL.CTRLA = 0x01; // ENABLE
+  delay(10);
+  Serial.print(F("PORTA.IN after=0x")); Serial.println(PORTA.IN, HEX);
+  Serial.print(F("A5 after=")); Serial.println((PORTA.IN & 0x08) ? 1 : 0);
+}
+
+void probe_IN1() {
+  CCL.CTRLA = 0;
+  CCL.LUT0CTRLA = 0;
+  CCL.LUT0CTRLB = 0;
+  CCL.LUT0CTRLC = 0;
+  CCL.TRUTH0 = 0;
+  PORTA.DIRCLR = 0x02; // PA1 input
+  PORTA.OUTCLR = 0x02; // Clear output
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80; // Inversion for active-low
+  PORTMUX.CCLROUTEA = 0x00;
+  Serial.print(F("PA1 raw=")); Serial.println((PORTA.IN & 0x02) ? 1 : 0);
+  PORTA.DIRSET = 0x02;
+  PORTA.OUTCLR = 0x02;
+  delay(2);
+  Serial.print(F("PA1 GPIO low=")); Serial.println((PORTA.IN & 0x02) ? 1 : 0);
+  PORTA.OUTSET = 0x02;
+  delay(2);
+  Serial.print(F("PA1 GPIO high=")); Serial.println((PORTA.IN & 0x02) ? 1 : 0);
+  PORTA.DIRCLR = 0x02;
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80;
+  Serial.print(F("PA1 raw after=")); Serial.println((PORTA.IN & 0x02) ? 1 : 0);
+  CCL.LUT0CTRLB = 0x01; // IN1=IO
+  CCL.LUT0CTRLC = 0x00;
+  CCL.TRUTH0 = 0xAA; // OUT=IN1 (adjusted for inversion)
+  CCL.LUT0CTRLA = 0x11; // OUTEN | ENABLE
+  CCL.CTRLA = 0x01; // ENABLE
+  delay(10);
+  PORTA.DIRSET = 0x02;
+  PORTA.OUTCLR = 0x02;
+  delay(5);
+  Serial.print(F("PA1 forced low, A5=")); Serial.println((PORTA.IN & 0x08) ? 1 : 0);
+  PORTA.OUTSET = 0x02;
+  delay(5);
+  Serial.print(F("PA1 forced high, A5=")); Serial.println((PORTA.IN & 0x08) ? 1 : 0);
+  PORTA.DIRCLR = 0x02;
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80;
+}
+
+void probe_IN2_hold(bool seedHigh) {
+  CCL.CTRLA = 0;
+  CCL.LUT0CTRLA = 0;
+  CCL.LUT0CTRLB = 0;
+  CCL.LUT0CTRLC = 0;
+  CCL.TRUTH0 = 0;
+  PORTA.DIRSET = 0x08;
+  PORTA.OUT = seedHigh ? 0x08 : 0x00; // Seed A5 directly
+  Serial.print(F("PORTA.IN after seed=")); Serial.println(PORTA.IN, HEX);
+  PORTMUX.CCLROUTEA = 0x00;
+  CCL.LUT0CTRLB = 0x00; // IN0/IN1/IN2 = MASK
+  CCL.LUT0CTRLC = 0x00;
+  CCL.TRUTH0 = seedHigh ? 0xFF : 0x00; // Force output to seed value
+  CCL.LUT0CTRLA = 0x11; // OUTEN | ENABLE
+  CCL.CTRLA = 0x01; // ENABLE
+  delay(20);
+  CCL.LUT0CTRLC = 0x01; // IN2=FEEDBACK
+  CCL.TRUTH0 = 0xF0; // OUT=IN2
+  delay(20);
+  Serial.print(F("IN2 seed=")); Serial.print(seedHigh);
+  Serial.print(F(" -> A5=")); Serial.println((PORTA.IN & 0x08) ? 1 : 0);
+  Serial.print(F("PORTA.IN after feedback=")); Serial.println(PORTA.IN, HEX);
+}
+
+void dumpccl() {
+  Serial.println(F("=== CCL register dump ==="));
+  Serial.print(F("CCL.CTRLA = 0x")); Serial.println(CCL.CTRLA, HEX);
+  Serial.print(F("CCL.SEQCTRL0 = 0x")); Serial.println(CCL.SEQCTRL0, HEX);
+  Serial.print(F("LUT0CTRLA = 0x")); Serial.println(CCL.LUT0CTRLA, HEX);
+  Serial.print(F("LUT0CTRLB = 0x")); Serial.println(CCL.LUT0CTRLB, HEX);
+  Serial.print(F("LUT0CTRLC = 0x")); Serial.println(CCL.LUT0CTRLC, HEX);
+  Serial.print(F("TRUTH0 = 0x")); Serial.println(CCL.TRUTH0, HEX);
+  Serial.print(F("PORTMUX.CCLROUTEA = 0x")); Serial.println(PORTMUX.CCLROUTEA, HEX);
+  Serial.print(F("PORTA.DIR = 0x")); Serial.println(PORTA.DIR, HEX);
+  Serial.print(F("PORTA.IN = 0x")); Serial.println(PORTA.IN, HEX);
+  Serial.print(F("PORTA.PIN0CTRL = 0x")); Serial.println(PORTA.PIN0CTRL, HEX);
+  Serial.print(F("PORTA.PIN1CTRL = 0x")); Serial.println(PORTA.PIN1CTRL, HEX);
+  Serial.print(F("VPORTD.DIR = 0x")); Serial.println(VPORTD.DIR, HEX);
+  Serial.print(F("VPORTD.OUT = 0x")); Serial.println(VPORTD.OUT, HEX);
+  Serial.print(F("EVSYS.CHANNEL0 = 0x")); Serial.println(EVSYS.CHANNEL0, HEX);
+  Serial.print(F("EVSYS.USERCCLLUT0A = 0x")); Serial.println(EVSYS.USERCCLLUT0A, HEX);
+  Serial.println(F("Done."));
+}
+
+void loop() {
+  static bool lastPA0 = true, lastPA1 = true;
+  static unsigned long lastDump = 0;
+
+  bool pa0 = (PORTA.IN & PIN0_bm) ? true : false;
+  bool pa1 = (PORTA.IN & PIN1_bm) ? true : false;
+  bool pa3 = (PORTA.IN & PIN3_bm) ? true : false;
+
+  // Re-apply PA1 pullup with inversion
+  PORTA.PIN1CTRL = PORT_PULLUPEN_bm | 0x80;
+
+  if (pa0 != lastPA0 || pa1 != lastPA1) {
+    Serial.print(F("PA0=")); Serial.print(pa0);
+    Serial.print(F(" PA1=")); Serial.print(pa1);
+    Serial.print(F(" A5=")); Serial.println(pa3);
+    if (!pa1) Serial.println(F("SET activated!"));
+    if (!pa0) Serial.println(F("RESET activated!"));
+  }
+  lastPA0 = pa0;
+  lastPA1 = pa1;
+
+  // Periodic register dump every 20 seconds
+  if (millis() - lastDump > 20000) {
+    lastDump = millis();
+    dumpccl();
+  }
+
+  delay(500);
+}
