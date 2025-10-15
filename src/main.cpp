@@ -16,7 +16,7 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 /*
 7-Oct-2025 Wa9fvP   v1.1  removed unused #defines.  Deleted commeted stuff at the battom . 
 14-Oct-2025 ZV      v1.1.1 added  version info and printout, allow 7300 and 705 default addresses.
-15-Oct-2025 ZV      v1.1.2 fix BCD check in state machine to properly validate BCD upper nibble.
+15-Oct-2025 ZV      v1.1.2 fix BCD check in state machine to properly validate BCD upper nibble. SM clarified comments.
 */    
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
 #define VERSION     "1.1.2"  // software version
