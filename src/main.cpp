@@ -29,6 +29,11 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 #define CIV_ADDR_7300 0x94  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7300
 #define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)==CIV_ADDR_7300)) // macro to check if address is valid
 
+// a small inline function to improve type safety and avoid double evaluation while keeping the same semantics as a macro.
+static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
+    return ((b >> 4) <= 9) && ((b & 0x0F) <= 9);
+}
+
 //=====[ End Settings ]========================================================================================
 // the icom CIV state machine function prototype
 bool icomSM2(uint8_t b, unsigned long * freq);  // prototype for fwd ref
@@ -175,15 +180,15 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     // FREQUENCY BYTES
     // next five bytes are frequency data, must ensure only valid packed BCD data (each nibble <= 0-9), or toss the frame
     // this is the most efficient way to check for valid BCD i could think of
-    case 8:  if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 9;  rcvBuff[5] = b; }
+    case 8:  if (CIV_IS_VALID_BCD_u8(b)) { state = 9;  rcvBuff[5] = b; }
           else { state = 1; }; break;
-    case 9:  if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 10; rcvBuff[6] = b; }
+    case 9:  if (CIV_IS_VALID_BCD_u8(b)) { state = 10; rcvBuff[6] = b; }
           else { state = 1; }; break;
-    case 10: if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 11; rcvBuff[7] = b; }
+    case 10: if (CIV_IS_VALID_BCD_u8(b)) { state = 11; rcvBuff[7] = b; }
            else { state = 1; }; break;
-    case 11: if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 12; rcvBuff[8] = b; }
+    case 11: if (CIV_IS_VALID_BCD_u8(b)) { state = 12; rcvBuff[8] = b; }
            else { state = 1; }; break;
-    case 12: if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 13; rcvBuff[9] = b; }
+    case 12: if (CIV_IS_VALID_BCD_u8(b)) { state = 13; rcvBuff[9] = b; }
            else { state = 1; }; break;
 
     // FRAME END BYTE       
