@@ -158,6 +158,16 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     // Opportunistic resync on preamble byte anywhere mid-frame.
     // encountering 0xFE while parsing TO/FROM/command/data likely indicates we lost
     // sync (dropped byte, noise, or concatenated frames).
+    /*
+    This snippet implements a mid-stream recovery mechanism for the CI-V parser. In the CI-V protocol, frames start 
+    with a two-byte preamble 0xFE 0xFE. Seeing a 0xFE while already past the preamble parsing states (state > 2) 
+    strongly suggests the parser lost synchronization—perhaps due to a dropped byte, line noise, or two frames 
+    being back-to-back without a gap.  When that happens, the code opportunistically resynchronizes by setting 
+    state = 2 (the state that expects the second 0xFE), priming rcvBuff[0] with 0xFE as the first preamble byte, 
+    and returning false to signal that no complete message was produced from this byte. This approach is conservative: 
+    it won’t advance unless the next byte is another 0xFE, minimizing false resyncs. It improves robustness without 
+    requiring a full buffer reset, since subsequent states will overwrite the needed positions anyway.
+    */
     if (b == 0xFE && state > 2) {
         state = 2;
         rcvBuff[0] = 0xFE;
