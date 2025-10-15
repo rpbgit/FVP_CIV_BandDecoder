@@ -17,9 +17,10 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 7-Oct-2025 Wa9fvP   v1.1  removed unused #defines.  Deleted commeted stuff at the battom . 
 14-Oct-2025 ZV      v1.1.1 added  version info and printout, allow 7300 and 705 default addresses.
 15-Oct-2025 ZV      v1.1.2 fix BCD check in state machine to properly validate BCD upper nibble. SM clarified comments.
-*/    
+16-Oct-2025 ZV      v1.1.3 added opportunistic resync on preamble byte mid-frame.
+*/
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "1.1.2"  // software version
+#define VERSION     "1.1.3"  // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD      9600  // [baud] Serial port CIV in/out baudrate  IC-705
@@ -137,7 +138,7 @@ Serial.print(incomingCIVByte, HEX); Serial.print(" ");
                 //  --------------------------------------------------------------------
             // Safety check to ensure BAND is within valid range
             // only do this if BAND is valid
-            if (BAND <= sizeof(bandtoBandBitMapTable) && BAND <= 13) {
+            if (BAND >= 0 && BAND < (int)(sizeof(bandtoBandBitMapTable))) {
                 //PORTF.OUT = (PORTF.OUT & ~0x0F) | (bandtoBandBitMapTable[BAND] & 0x0F); // set BAND bits, preserve upper nibble
                 VPORTD.OUT = (VPORTD.OUT & ~0x0F) | (bandtoBandBitMapTable[BAND] & 0x0F); // set BAND bits, preserve upper nibble
             }
@@ -154,6 +155,15 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     static byte rcvBuff[32] = {0}; // buffer to keep the incoming freq data in until a full message is received
     static int state = 1;  // state machine
     
+    // Opportunistic resync on preamble byte anywhere mid-frame.
+    // encountering 0xFE while parsing TO/FROM/command/data likely indicates we lost
+    // sync (dropped byte, noise, or concatenated frames).
+    if (b == 0xFE && state > 2) {
+        state = 2;
+        rcvBuff[0] = 0xFE;
+        return false;
+    }
+
     switch (state) {
     // PREAMBLE 0xFE 0xFE
     case 1: if (b == 0xFE) { state = 2; rcvBuff[0] = b; }; break;
@@ -197,18 +207,30 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     }
 
 	// Check if we have received a full message (indicated by 0xFD at the end of message)
-    if(rcvBuff[10] == 0xFD) {
+    // if(rcvBuff[10] == 0xFD) {
+    //     *freq = 0;
+    //     // Decode the frequency from the received BCD bytes, bytes 5 to 9 in rcvBuff in reverse order (LSB first)
+    //     for (int j = 9; j >= 5; j--) {
+    //         // Each byte contains two BCD digits: high nibble and low nibble, read from right to left - see ICOM manual
+    //         int high = (rcvBuff[j] >> 4) & 0x0F;
+    //         int low = rcvBuff[j] & 0x0F;
+    //         *freq = *freq * 100 + high * 10 + low;
+    //     }
+    //     memset(rcvBuff, 0, sizeof(rcvBuff)); // Clear the buffer for the next message
+    //     return true; // Indicate that a full message was received and freq is valid to the caller
+	// } 
+    if (rcvBuff[10] == 0xFD) {
         *freq = 0;
         // Decode the frequency from the received BCD bytes, bytes 5 to 9 in rcvBuff in reverse order (LSB first)
         for (int j = 9; j >= 5; j--) {
             // Each byte contains two BCD digits: high nibble and low nibble, read from right to left - see ICOM manual
-            int high = (rcvBuff[j] >> 4) & 0x0F;
-            int low = rcvBuff[j] & 0x0F;
-            *freq = *freq * 100 + high * 10 + low;
+            uint8_t high = (uint8_t)(rcvBuff[j] >> 4);
+            uint8_t low  = (uint8_t)(rcvBuff[j] & 0x0F);
+            *freq = *freq * 100UL + (unsigned long)high * 10UL + (unsigned long)low;
         }
-        memset(rcvBuff, 0, sizeof(rcvBuff)); // Clear the buffer for the next message
-        return true; // Indicate that a full message was received and freq is valid to the caller
-	} else 
+        memset(rcvBuff, 0, sizeof(rcvBuff));
+        return true;
+    }else 
 		return false; // valid Message not complete yet, keep feeding the pig until a full message is received
 }
 
