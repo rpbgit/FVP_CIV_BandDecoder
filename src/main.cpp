@@ -150,14 +150,20 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     static int state = 1;  // state machine
     
     switch (state) {
+    // PREAMBLE 0xFE 0xFE
     case 1: if (b == 0xFE) { state = 2; rcvBuff[0] = b; }; break;
     case 2: if (b == 0xFE) { state = 3; rcvBuff[1] = b; } else { state = 1; }; break;
-        // adresses that use different software 00-trx, e0-pc-ale, winlinkRMS, f1-winlink trimode
+    
+    // TO ADDRESS BYTE
+    // adresses that use different software 00-trx, e0-pc-ale, winlinkRMS, f1-winlink trimode
     case 3: if (b == 0x00 || b == 0xE0 || b == 0xF1) { state = 4; rcvBuff[2] = b; }
           else if ( CIV_ADDRESSES_MATCH(b) ) { state = 6; rcvBuff[2] = b; }
-          else { state = 1; }; break;                      
+          else { state = 1; }; break;      
+          
+    // FROM ADDRESS BYTE     
     case 4: if ( CIV_ADDRESSES_MATCH(b) ) { state = 5; rcvBuff[3] = b; }
-          else { state = 1; }; break;                      // select command $03
+          else { state = 1; }; break;
+    
     case 5: if (b == 0x00 || b == 0x03) { state = 8; rcvBuff[4] = b; }
           else { state = 1; }; break;
 
@@ -166,8 +172,9 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     case 7: if (b == 0x00 || b == 0x05) { state = 8; rcvBuff[4] = b; }
           else { state = 1; }; break;
 
-        // next five bytes are frequency data, must ensure only valid packed BCD data (each nibble <= 0-9), or toss the frame
-        // this is the most efficient way to check for valid BCD i could think of
+    // FREQUENCY BYTES
+    // next five bytes are frequency data, must ensure only valid packed BCD data (each nibble <= 0-9), or toss the frame
+    // this is the most efficient way to check for valid BCD i could think of
     case 8:  if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 9;  rcvBuff[5] = b; }
           else { state = 1; }; break;
     case 9:  if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 10; rcvBuff[6] = b; }
@@ -178,6 +185,8 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
            else { state = 1; }; break;
     case 12: if (((b & 0xF0) >> 4) <= 0x09 && (b & 0x0F) <= 0x09) { state = 13; rcvBuff[9] = b; }
            else { state = 1; }; break;
+
+    // FRAME END BYTE       
     case 13: if (b == 0xFD) { state = 1; rcvBuff[10] = b; }
            else { state = 1; rcvBuff[10] = 0; }; break; // 0xFD is frame end byte
     }
