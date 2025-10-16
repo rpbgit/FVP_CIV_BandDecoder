@@ -181,42 +181,36 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     case 1: if (b == CIV_PREAMBLE_BYTE) { state = 2; rcvBuff[0] = b; }; break;
     case 2: if (b == CIV_PREAMBLE_BYTE) { state = 3; rcvBuff[1] = b; } else { state = 1; }; break;
 
-    // TO ADDRESS BYTE
-    // adresses that use different software 00-trx, e0-pc-ale, winlinkRMS, f1-winlink trimode
+    // TO ADDRESS BYTE  (accept only expected destinations)
+    // addresses that use different software 00-trx, e0-pc-ale, winlinkRMS, f1-winlink trimode
     case 3: if (b == 0x00 || b == 0xE0 || b == 0xF1) { state = 4; rcvBuff[2] = b; }
           else if ( CIV_ADDRESSES_MATCH(b) ) { state = 6; rcvBuff[2] = b; }
           else { state = 1; }; break;      
           
     // FROM ADDRESS BYTE     
-    case 4: if ( CIV_ADDRESSES_MATCH(b) ) { state = 5; rcvBuff[3] = b; }
-          else { state = 1; }; break;
+    case 4: if ( CIV_ADDRESSES_MATCH(b) ) { state = 5; rcvBuff[3] = b; } else { state = 1; }; break;
     
-    case 5: if (b == 0x00 || b == 0x03) { state = 8; rcvBuff[4] = b; }
-          else { state = 1; }; break;
-
-    case 6: if (b == 0x00 || b == 0xE0 || b == 0xF1) { state = 7; rcvBuff[3] = b; }
-          else { state = 1; }; break;  // select command $05
-    case 7: if (b == 0x00 || b == 0x05) { state = 8; rcvBuff[4] = b; }
-          else { state = 1; }; break;
+    // Command filtering
+    case 5: if (b == 0x00 || b == 0x03) { state = 8; rcvBuff[4] = b; } else { state = 1; }; break;
+    case 6: if (b == 0x00 || b == 0xE0 || b == 0xF1) { state = 7; rcvBuff[3] = b; } else { state = 1; }; break;
+    case 7: if (b == 0x00 || b == 0x05) { state = 8; rcvBuff[4] = b; }  else { state = 1; }; break;
 
     // FREQUENCY BYTES
     // next five bytes are frequency data, must ensure only valid packed BCD data (each nibble <= 0-9), or toss the frame
     // this is the most efficient way to check for valid BCD i could think of
-    case 8:  if (CIV_IS_VALID_BCD_u8(b)) { state = 9;  rcvBuff[5] = b; }
-          else { state = 1; }; break;
-    case 9:  if (CIV_IS_VALID_BCD_u8(b)) { state = 10; rcvBuff[6] = b; }
-          else { state = 1; }; break;
-    case 10: if (CIV_IS_VALID_BCD_u8(b)) { state = 11; rcvBuff[7] = b; }
-           else { state = 1; }; break;
-    case 11: if (CIV_IS_VALID_BCD_u8(b)) { state = 12; rcvBuff[8] = b; }
-           else { state = 1; }; break;
-    case 12: if (CIV_IS_VALID_BCD_u8(b)) { state = 13; rcvBuff[9] = b; }
-           else { state = 1; }; break;
+    case 8:  if (CIV_IS_VALID_BCD_u8(b)) { state = 9;  rcvBuff[5] = b; } else { state = 1; }; break;
+    case 9:  if (CIV_IS_VALID_BCD_u8(b)) { state = 10; rcvBuff[6] = b; } else { state = 1; }; break;
+    case 10: if (CIV_IS_VALID_BCD_u8(b)) { state = 11; rcvBuff[7] = b; } else { state = 1; }; break;
+    case 11: if (CIV_IS_VALID_BCD_u8(b)) { state = 12; rcvBuff[8] = b; } else { state = 1; }; break;
+    case 12: if (CIV_IS_VALID_BCD_u8(b)) { state = 13; rcvBuff[9] = b; } else { state = 1; }; break;
 
     // FRAME END BYTE       
-    case 13: if (b == CIV_FRAME_END_BYTE ) { state = 1; rcvBuff[10] = b; }
-           else { state = 1; rcvBuff[10] = 0; }; break; // 0xFD is frame end byte
-    }
+    case 13: if (b == CIV_FRAME_END_BYTE ) { state = 1; rcvBuff[10] = b; } 
+        else { state = 1; rcvBuff[10] = 0; }; 
+        break; // 0xFD is frame end byte
+    
+    default: state = 1; break;
+    } // end switch
 
 	// Check if we have received a full message (indicated by 0xFD at the end of message)
     // If so, decode the frequency from the received BCD bytes
