@@ -17,10 +17,10 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 7-Oct-2025 Wa9fvP   v1.1  removed unused #defines.  Deleted commeted stuff at the battom . 
 14-Oct-2025 ZV      v1.1.1 added  version info and printout, allow 7300 and 705 default addresses.
 15-Oct-2025 ZV      v1.1.2 fix BCD check in state machine to properly validate BCD upper nibble. SM clarified comments.
-16-Oct-2025 ZV      v1.1.3 added opportunistic resync on preamble byte mid-frame.
+16-Oct-2025 ZV      v1.2 added opportunistic resync on preamble byte mid-frame.
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "1.1.3"  // software version
+#define VERSION     "1.2"  // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD      9600  // [baud] Serial port CIV in/out baudrate  IC-705
