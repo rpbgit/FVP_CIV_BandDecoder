@@ -29,6 +29,8 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 #define CIV_ADDR_705  0xA4  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
 #define CIV_ADDR_7300 0x94  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7300
 #define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)==CIV_ADDR_7300)) // macro to check if address is valid
+#define CIV_PREAMBLE_BYTE 0xFE  // CIV preamble byte - each frame starts with 0xFE 0xFE
+#define CIV_FRAME_END_BYTE 0xFD  // CIV frame end byte - each frame ends with 0xFD
 
 // a small inline function to improve type safety and avoid double evaluation while keeping the same semantics as a macro.
 static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
@@ -155,11 +157,11 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     static byte rcvBuff[32] = {0}; // buffer to keep the incoming freq data in until a full message is received
     static int state = 1;  // state machine
     
-    // Opportunistic resync on preamble byte anywhere mid-frame.
+    /* Opportunistic resync on preamble byte anywhere mid-frame.
     // encountering 0xFE while parsing TO/FROM/command/data likely indicates we lost
     // sync (dropped byte, noise, or concatenated frames).
-    /*
-    This snippet implements a mid-stream recovery mechanism for the CI-V parser. In the CI-V protocol, frames start 
+
+    This implements a mid-stream recovery mechanism for the CI-V parser. In the CI-V protocol, frames start 
     with a two-byte preamble 0xFE 0xFE. Seeing a 0xFE while already past the preamble parsing states (state > 2) 
     strongly suggests the parser lost synchronization—perhaps due to a dropped byte, line noise, or two frames 
     being back-to-back without a gap.  When that happens, the code opportunistically resynchronizes by setting 
@@ -168,17 +170,17 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     it won’t advance unless the next byte is another 0xFE, minimizing false resyncs. It improves robustness without 
     requiring a full buffer reset, since subsequent states will overwrite the needed positions anyway.
     */
-    if (b == 0xFE && state > 2) {
+    if (b == CIV_PREAMBLE_BYTE && state > 2) {
         state = 2;
-        rcvBuff[0] = 0xFE;
+        rcvBuff[0] = CIV_PREAMBLE_BYTE;
         return false;
     }
 
     switch (state) {
     // PREAMBLE 0xFE 0xFE
-    case 1: if (b == 0xFE) { state = 2; rcvBuff[0] = b; }; break;
-    case 2: if (b == 0xFE) { state = 3; rcvBuff[1] = b; } else { state = 1; }; break;
-    
+    case 1: if (b == CIV_PREAMBLE_BYTE) { state = 2; rcvBuff[0] = b; }; break;
+    case 2: if (b == CIV_PREAMBLE_BYTE) { state = 3; rcvBuff[1] = b; } else { state = 1; }; break;
+
     // TO ADDRESS BYTE
     // adresses that use different software 00-trx, e0-pc-ale, winlinkRMS, f1-winlink trimode
     case 3: if (b == 0x00 || b == 0xE0 || b == 0xF1) { state = 4; rcvBuff[2] = b; }
@@ -212,24 +214,13 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
            else { state = 1; }; break;
 
     // FRAME END BYTE       
-    case 13: if (b == 0xFD) { state = 1; rcvBuff[10] = b; }
+    case 13: if (b == CIV_FRAME_END_BYTE ) { state = 1; rcvBuff[10] = b; }
            else { state = 1; rcvBuff[10] = 0; }; break; // 0xFD is frame end byte
     }
 
 	// Check if we have received a full message (indicated by 0xFD at the end of message)
-    // if(rcvBuff[10] == 0xFD) {
-    //     *freq = 0;
-    //     // Decode the frequency from the received BCD bytes, bytes 5 to 9 in rcvBuff in reverse order (LSB first)
-    //     for (int j = 9; j >= 5; j--) {
-    //         // Each byte contains two BCD digits: high nibble and low nibble, read from right to left - see ICOM manual
-    //         int high = (rcvBuff[j] >> 4) & 0x0F;
-    //         int low = rcvBuff[j] & 0x0F;
-    //         *freq = *freq * 100 + high * 10 + low;
-    //     }
-    //     memset(rcvBuff, 0, sizeof(rcvBuff)); // Clear the buffer for the next message
-    //     return true; // Indicate that a full message was received and freq is valid to the caller
-	// } 
-    if (rcvBuff[10] == 0xFD) {
+    // If so, decode the frequency from the received BCD bytes
+    if (rcvBuff[10] == CIV_FRAME_END_BYTE) { // full message received
         *freq = 0;
         // Decode the frequency from the received BCD bytes, bytes 5 to 9 in rcvBuff in reverse order (LSB first)
         for (int j = 9; j >= 5; j--) {
