@@ -1,0 +1,607 @@
+
+NOTE USE THE DATA AT THE ENDD OF THJIS FILE
+
+Arduino Every has 4 independent hardware Serial ports
+
+
+🔑 Serial port recap (corrected)
+
+Serial (USB) → D0 (PE0 RX), D1 (PE1 TX)
+Serial1 → D2 (PE2 RX), D3 (PE3 TX)
+Serial2 → D4 (PE4 RX), D5 (PE5 TX)
+Serial3 → D7 (PB1 RX), D8 (PB2 TX)
+
+⚡ Differences from the ATmega328P Nano
+
+
+Port grouping (Arduino pins grouped by ATmega4809 PORT)
+
+Use these groups to pick pins you want switched atomically: write the whole PORTx.OUT (or use PORTx.OUTSET/OUTCLR/OUTTGL) to change all bits in that port at once.
+
+MCU PORT	MCU bit	Arduino label(s)	Arduino pin (Dn / Ak)	Notes
+PORTA	PA0	D2	D2 (PA0)	UART0 TX (default). 
+Kevin's Blog
+
+	PA1	D7	D7 (PA1)	UART0 RX (default). 
+Kevin's Blog
+
+PORTB	PB0	D9	D9 (PB0)	UART3 TX (default). 
+Kevin's Blog
+
+	PB1	D10	D10 (PB1)	UART3 RX (default). 
+Kevin's Blog
+
+	PB2	D5	D5 (PB2)	—
+PORTC	PC4	D1	D1 (PC4)	Serial1 TX (ALT mapping). 
+Kevin's Blog
+
+	PC5	D0	D0 (PC5)	Serial1 RX (ALT mapping). 
+Kevin's Blog
+
+	PC6	D4	D4 (PC6)	—
+PORTD	PD0	A3 / D17	D17 (PD0) / A3	AIN0 → A3. (PD0..PD5 supply A0..A7 family). 
+Kevin's Blog
+
+	PD1	A2 / D16	D16 (PD1) / A2	AIN1. 
+Kevin's Blog
+
+	PD2	A1 / D15	D15 (PD2) / A1	AIN2. 
+Kevin's Blog
+
+	PD3	A0 / D14	D14 (PD3) / A0	AIN3. 
+Kevin's Blog
+
+	PD4	A6 / D20	D20 (PD4) / A6	AIN4. 
+Kevin's Blog
+
+	PD5	A7 / D21	D21 (PD5) / A7	AIN5. 
+Kevin's Blog
+
+	PD6	—	not wired to Nano Every header	AIN6 exists on chip but is not available on the Nano Every PCB. 
+Kevin's Blog
+
+	PD7	AREF	AREF (PD7)	AIN7 used as AREF on the Nano Every (not a normal Dn). 
+Kevin's Blog
+
+PORTE	PE0	D11	D11 (PE0)	Also ADC AIN8 / SPI MISO (SC1). 
+Kevin's Blog
++1
+
+	PE1	D12	D12 (PE1)	AIN9 / SPI MOSI. 
+Kevin's Blog
+
+	PE2	D13	D13 (PE2)	AIN10 / SPI SCK / LED_BUILTIN. 
+Kevin's Blog
+
+	PE3	D8	D8 (PE3)	AIN11. 
+Kevin's Blog
+
+PORTF	PF2	A4 / D18	D18 (PF2) / A4	AIN12 — exposed as A4. 
+Kevin's Blog
+
+	PF3	A5 / D19	D19 (PF3) / A5	AIN13 — exposed as A5. 
+Kevin's Blog
+
+	PF4	D6	D6 (PF4)	AIN14, alt UART2 TX (ALT1). 
+Kevin's Blog
++1
+
+	PF5	D3	D3 (PF5)	AIN15, alt UART2 RX (ALT1). 
+Kevin's Blog
++1
+
+	PF0, PF1	—	NOT broken out to Arduino headers	These PF0/PF1 pins exist on the MCU (UART2 default pins) but are not available on the Nano Every header — only PF2..PF5 are exposed. 
+Arduino Content
++1
+
+Compact (which Arduino pins share the same PORT):
+
+PORTA: D2, D7
+
+PORTB: D5, D9, D10
+
+PORTC: D0, D1, D4
+
+PORTD: D14, D15, D16, D17, D20, D21 (these are PD3,PD2,PD1,PD0,PD4,PD5 respectively)
+
+PORTE: D8, D11, D12, D13
+
+PORTF: D3, D6, D18, D19 (PF5, PF4, PF2, PF3)
+
+(Use the above groupings to know which pins you can change with a single port write.) 
+Arduino Content
++1
+
+Which pins are tied to the serial ports (UARTs)?
+
+Short version (how Nano Every maps UARTs to Arduino pins by default and via alternate routes):
+
+Serial (USB / Console) — routed through the USB interface (SAMD11 bridge) and uses the MCU's USART3 signals (USB-side connections). By default you use Serial for USB CDC. 
+Kevin's Blog
++1
+
+Serial1 — exposed on D0 / D1 (these are PC5/PC4 via the core’s alternate mapping). So Serial1 = D0 (RX) / D1 (TX) in the official core. 
+Kevin's Blog
+
+Serial2 (USART0) — PA0/PA1 are the hardware UART0 pins (D2,D7), but in the official Arduino core the extra UARTs are disabled by default; you can enable them (change pins_arduino.h or use MegaCoreX) so that Serial2 maps to D2 (TX) / D7 (RX). Alternate mappings exist (PORTMUX selects ALT1 on some pins). 
+Kevin's Blog
++1
+
+Serial3 (USART2) — chip UART2 signals default on PF0/PF1; the Nano Every breaks out PF4/PF5 as D6/D3 which can be used as UART2 via PORTMUX (so Serial3 can be made to appear on D3/D6). Again the official core does not enable all of these by default; community docs show how to enable them. 
+Kevin's Blog
+
+If you need to run multiple hardware UARTs, use the Arduino core variant edits Kevin and others describe (or use MegaCoreX which already exposes them). 
+Kevin's Blog
++1
+
+Are all PORTF pins useful as digital pins?
+
+No — not all PORTF pins are available on the Nano Every header. On the chip PORTF has PF0..PF5, but the Nano Every only exposes PF2, PF3, PF4, PF5 to the headers:
+
+PF2 → A4 (also AIN12) — available.
+
+PF3 → A5 (also AIN13) — available.
+
+PF4 → D6 (also AIN14) — available.
+
+PF5 → D3 (also AIN15) — available.
+
+PF0 / PF1 — exist on the MCU (UART2 default pins) but are not brought out to the Nano Every board pins. 
+Kevin's Blog
++1
+
+So yes: the exposed PORTF pins are fully usable digital pins (and they also have ADC/UART alt functions), but PF0/PF1 are not accessible from the Nano Every headers.
+
+How to guarantee simultaneous switching (practical advice + code)
+
+If the pins you want to flip are on the same PORT (e.g., PE0..PE3) — you can change them atomically by writing the whole port OUT register or using the atomic set/clear/toggle registers.
+
+Use PORTx.OUT = value; to write all 8 bits of that port in one instruction.
+
+Or use PORTx.OUTSET = mask; / PORTx.OUTCLR = mask; / PORTx.OUTTGL = mask; to atomically set/clear/toggle only the bits in mask. (This is the recommended, race-free method if you only want to set or clear some bits.) 
+Microchip
++1
+
+Example (compile in AVR GCC with <avr/io.h>):
+
+#include <avr/io.h>
+
+// set PE0..PE3 high (atomic)
+PORTE.OUTSET = 0x0F;
+
+// clear PE0..PE3 (atomic)
+PORTE.OUTCLR = 0x0F;
+
+// toggle PE0..PE3 (atomic)
+PORTE.OUTTGL = 0x0F;
+
+// write full port (sets exactly the listed bits, other bits overwritten)
+PORTE.OUT = (PORTE.OUT & ~0x0F) | (new_value & 0x0F);
+// OR to set whole port to a value (single write)
+PORTE.OUT = some_byte_value;
+
+
+Notes:
+
+VPORTx is the fast, bit-accessible alias for the PORT registers; it lets some single-bit instructions work efficiently, but use PORTx.OUTSET/OUTCLR/OUTTGL if you need atomic set/clear/toggle behavior. See the ATmega4809 datasheet. 
+Microchip
++1
+
+If pins you want to flip are in different PORTs (e.g., one pin on PORTE and another on PORTC) — there is no single atomic register that touches both; the best you can do from software is write each port as fast as possible (or temporarily disable interrupts while you perform the writes) — they will not be cycle-perfect simultaneous. 
+Microchip
+
+
+As I mentioned last time, the “out of the box” Arduino experience for the Nano Every has Serial attached to the USB serial line and Serial 1 representing the hardware UART on D0/D1.  These are mapped onto the ATmega4809 MCU as follows:
+
+Serial -> UART 3
+Serial 1 -> UART 1 -> D0/D1   <<< use this for the CIV port.
+
+https://emalliab.wordpress.com/2021/12/16/arduino-nano-every-serial-ports/
+
+#include <avr/io.h>
+
+// set PE0..PE3 high (atomic)
+PORTE.OUTSET = 0x0F;
+
+// clear PE0..PE3 (atomic)
+PORTE.OUTCLR = 0x0F;
+
+// toggle PE0..PE3 (atomic)
+PORTE.OUTTGL = 0x0F;
+
+// write full port (sets exactly the listed bits, other bits overwritten)
+PORTE.OUT = (PORTE.OUT & ~0x0F) | (new_value & 0x0F);
+// OR to set whole port to a value (single write)
+PORTE.OUT = some_byte_value;
+
+
+
+🟦 PORTA (base 0x0400)
+Bit	ATmega Pin	Arduino Pin	Notes
+0	PA0	D0 (RX0)	Serial RX (USB bridge)
+1	PA1	D1 (TX0)	Serial TX (USB bridge)
+2	PA2	D2 (RX1)	Serial1 RX
+3	PA3	D3 (TX1)	Serial1 TX
+4	PA4	D4 (RX2)	Serial2 RX
+5	PA5	D5 (TX2)	Serial2 TX
+6	PA6	—	Not broken out
+7	PA7	—	Not broken out
+🟩 PORTB (base 0x0420)
+Bit	ATmega Pin	Arduino Pin	Notes
+0	PB0	D10	Also SPI SS
+1	PB1	D11	SPI MOSI
+2	PB2	D12	SPI MISO
+3	PB3	D13 (LED)	SPI SCK
+4	PB4	—	Not broken out
+5	PB5	—	Not broken out
+6	PB6	—	Not broken out
+7	PB7	—	Not broken out
+🟨 PORTC (base 0x0440)
+Bit	ATmega Pin	Arduino Pin	Notes
+0	PC0	—	Not broken out
+1	PC1	—	Not broken out
+2	PC2	D8 (TX3)	Serial3 TX
+3	PC3	D9 (RX3)	Serial3 RX
+4	PC4	—	Not broken out
+5	PC5	—	Not broken out
+6	PC6	—	Not broken out
+7	PC7	—	Not broken out
+🟥 PORTD (base 0x0460)
+Bit	ATmega Pin	Arduino Pin	Notes
+0	PD0	—	Not broken out
+1	PD1	—	Not broken out
+2	PD2	—	Not broken out
+3	PD3	—	Not broken out
+4	PD4	—	Not broken out
+5	PD5	—	Not broken out
+6	PD6	—	Not broken out
+7	PD7	—	Not broken out
+
+(⚠️ Note: PORTD is mostly internal and not connected to headers on the Nano Every.)
+
+🟪 PORTE (base 0x0480)
+Bit	ATmega Pin	Arduino Pin	Notes
+0	PE0	D6	Also used as GPIO
+1	PE1	D7	Also used as GPIO
+2	PE2	D8	Also RX3 (alt)
+3	PE3	D9	Also TX3 (alt)
+4	PE4	—	Not broken out
+5	PE5	—	Not broken out
+6	PE6	—	Not broken out
+7	PE7	—	Not broken out
+🟫 PORTF (base 0x04A0) — the Analog/Digital Port
+Bit	ATmega Pin	Arduino Pin	Notes
+0	PF0	A0 / D14	ADC0
+1	PF1	A1 / D15	ADC1
+2	PF2	A2 / D16	ADC2
+3	PF3	A3 / D17	ADC3
+4	PF4	A4 / D18	ADC4, SDA (I²C)
+5	PF5	A5 / D19	ADC5, SCL (I²C)
+6	PF6	A6 / D20	ADC6
+7	PF7	A7 / D21	ADC7
+🔑 Takeaways
+
+PORTF is the nicest — 8 contiguous pins, all exposed (A0–A7).
+
+PORTB is partly exposed — D10–D13 (SPI pins).
+
+PORTA gives you D0–D5 (Serial0/1/2).
+
+PORTC gives you D8–D9 (Serial3).
+
+PORTE gives you D6–D9 (overlaps with PORTC in Arduino core naming).
+
+PORTD is not really available.
+
+So if you want to guarantee simultaneous switching with PORTx.OUT, your best choices are:
+
+PORTF (A0–A7) → full byte bus
+
+PORTB low nibble (D10–D13) → good for SPI or parallel 4-bit bus
+
+
+
+The VPORTF.OUT bits on the Arduino Nano Every map to the following physical Arduino pins on the board/module:
+
+VPORTF Bit	Arduino Pin	Function/Notes
+0	D14	Digital Pin 14
+1	D15	Digital Pin 15
+2	A4	Analog Pin 4 (also digital capable)
+3	A5	Analog Pin 5 (also digital capable)
+This means when you manipulate VPORTF.OUT bits 0–3, you control the states of Arduino pins D14, D15, A4, and A5, respectively.
+
+These pins correspond to physical header pins on the Nano Every board, with D14 and D15 being digital only, and A4 and A5 usable as analog inputs or digital I/O.
+
+The Nano Every uses the ATmega4809, which breaks the traditional port-pin mapping of classic ATmega chips, but the Arduino pinout tries to maintain compatible Arduino pin numbering.
+
+In the underlying MCU, these pins live on Port F bits 0 through 3 as exposed via VPORTF.
+
+This mapping is detailed in official datasheets, Arduino documentation, and deep-dive pinout references for the Nano Every and ATmega4809.
+
+So manipulating VPORTF.OUT bits 0-3 is a direct way to control physical Arduino header pins D14, D15, A4, and A5 on the Nano Every board.The VPORTF.OUT pins 0 to 3 on the Arduino Nano Every correspond to these board/module pins:
+
+Bit 0: Digital pin D14
+
+Bit 1: Digital pin D15
+
+Bit 2: Analog pin A4 (also digital capable)
+
+Bit 3: Analog pin A5 (also digital capable)
+
+So manipulating VPORTF.OUT bits 0-3 directly controls Arduino pins D14, D15, A4, and A5 respectively. These are the physical header pins on the board for those port bits.
+
+Here is the mapping of the bits of VPORTF.OUT on the Arduino Nano Every to the actual pins on the module/board:
+
+VPORTF Bit	Arduino Pin	Description
+Bit 0	D14	Digital Pin 14
+Bit 1	D15	Digital Pin 15
+Bit 2	A4	Analog Pin 4 (also digital)
+Bit 3	A5	Analog Pin 5 (also digital)
+These are the only bits within VPORTF.OUT that are connected to Arduino header pins.
+
+Bits beyond 3 on PORTF either are unused or connected internally or not available on Arduino headers.
+
+Manipulating VPORTF.OUT bits 0 to 3 will directly change the voltage levels of these pins on the Nano Every board.
+
+So physically, those pins correspond to:
+
+D14 = PF0
+
+D15 = PF1
+
+A4 = PF2
+
+A5 = PF3
+
+This gives you direct control of those labeled pins by changing specific bits in VPORTF.OUT.
+
+Here is a detailed mapping of the Arduino Nano Every pins across the ATmega4809 VPORTs, showing which MCU port bits correspond to which Arduino board pins:
+
+Arduino Pin	MCU Port	Port Bit	VPORT Register
+D0	PORTC	5	VPORTC.OUT bit 5
+D1	PORTC	4	VPORTC.OUT bit 4
+D2	PORTA	0	VPORTA.OUT bit 0
+D3	PORTF	5	VPORTF.OUT bit 5
+D4	PORTC	6	VPORTC.OUT bit 6
+D5	PORTB	2	VPORTB.OUT bit 2
+D6	PORTF	4	VPORTF.OUT bit 4
+D7	PORTA	1	VPORTA.OUT bit 1
+D8	PORTB	0	VPORTB.OUT bit 0
+D9	PORTB	1	VPORTB.OUT bit 1
+D10	PORTB	3	VPORTB.OUT bit 3
+D11	PORTA	4	VPORTA.OUT bit 4
+D12	PORTA	5	VPORTA.OUT bit 5
+D13	PORTA	6	VPORTA.OUT bit 6
+D14	PORTF	0	VPORTF.OUT bit 0
+D15	PORTF	1	VPORTF.OUT bit 1
+D16	PORTA	2	VPORTA.OUT bit 2
+D17	PORTA	3	VPORTA.OUT bit 3
+A0 (D18)	PORTD	3	VPORTD.OUT bit 3
+A1 (D19)	PORTD	2	VPORTD.OUT bit 2
+A2 (D20)	PORTD	1	VPORTD.OUT bit 1
+A3 (D21)	PORTD	0	VPORTD.OUT bit 0
+A4 (D22)	PORTF	2	VPORTF.OUT bit 2
+A5 (D23)	PORTF	3	VPORTF.OUT bit 3
+A6 (D24)	PORTD	5	VPORTD.OUT bit 5
+A7 (D25)	PORTD	4	VPORTD.OUT bit 4
+Summary:
+You can manipulate 8 bits at once by working with any VPORTx.OUT register, but only for pins physically belonging to that port.
+
+Arduino pins are spread across multiple MCU ports, so no single port covers all Arduino pins consecutively.
+
+Typical ports with up to 8 bits are VPORTA, VPORTB, VPORTC, VPORTD, VPORTF.
+
+Pins like D14, D15, A4, A5 reside on VPORTF bits 0-3, while others are scattered among VPORTA, VPORTB, etc.
+
+This lets you do direct bitwise manipulation on specific sets of pins efficiently, depending on which port their MCU pins belong to.
+
+If needed, examples of manipulating specific VPORT registers for these pins can also be provided.
+
+
+Here is the mapping of Arduino Nano Every pins ordered by MCU port with their respective bits in VPORTx registers:
+
+Port A (VPORTA)
+Port Bit	Arduino Pin	Notes
+PA0 (0)	D2	Digital Pin 2
+PA1 (1)	D7	Digital Pin 7
+PA2 (2)	D16	Digital Pin 16
+PA3 (3)	D17	Digital Pin 17
+PA4 (4)	D11	Digital Pin 11
+PA5 (5)	D12	Digital Pin 12
+PA6 (6)	D13	Digital Pin 13
+PA7 (7)	-	No Arduino pin
+
+Port B (VPORTB)
+Port Bit	Arduino Pin	Notes
+PB0 (0)	D8	Digital Pin 8
+PB1 (1)	D9	Digital Pin 9
+PB2 (2)	D5	Digital Pin 5
+PB3 (3)	D10	Digital Pin 10
+PB4 (4)	-	No Arduino pin
+PB5 (5)	-	No Arduino pin
+PB6 (6)	-	No Arduino pin
+PB7 (7)	-	No Arduino pin
+
+Port C (VPORTC)
+Port Bit	Arduino Pin	Notes
+PC0 (0)	D1	Digital Pin 1
+PC1 (1)	D0	Digital Pin 0
+PC2 (2)	-	No Arduino pin
+PC3 (3)	-	No Arduino pin
+PC4 (4)	-	No Arduino pin
+PC5 (5)	-	No Arduino pin
+PC6 (6)	D4	Digital Pin 4
+PC7 (7)	-	No Arduino pin
+
+Port D (VPORTD)
+Port Bit	Arduino Pin	Notes
+PD0 (0)	A3 (D21)	Analog Pin 3
+PD1 (1)	A2 (D20)	Analog Pin 2
+PD2 (2)	A1 (D19)	Analog Pin 1
+PD3 (3)	A0 (D18)	Analog Pin 0
+PD4 (4)	A7 (D25)	Analog Pin 7
+PD5 (5)	A6 (D24)	Analog Pin 6
+PD6 (6)	-	No Arduino pin
+PD7 (7)	-	No Arduino pin
+
+Port E (VPORTE)
+Port Bit	Arduino Pin	Notes
+PE0 (0)	D11	Digital Pin 11
+PE1 (1)	D12	Digital Pin 12
+PE2 (2)	D13	Digital Pin 13
+PE3 (3)	D8	Digital Pin 8
+PE4 (4)	-	No Arduino pin
+PE5 (5)	-	No Arduino pin
+PE6 (6)	-	No Arduino pin
+PE7 (7)	-	No Arduino pin
+
+Port F (VPORTF)
+Port Bit	Arduino Pin	Notes
+PF0 (0)	D14	Digital Pin 14
+PF1 (1)	D15	Digital Pin 15
+PF2 (2)	A4 (D22)	Analog Pin 4
+PF3 (3)	A5 (D23)	Analog Pin 5
+PF4 (4)	D6	Digital Pin 6
+PF5 (5)	D3	Digital Pin 3
+PF6 (6)	-	No Arduino pin
+PF7 (7)	-	No Arduino pin
+Each VPORTx.OUT controls all 8 bits for the corresponding port. You can manipulate all 8 pins that belong to that port atomically using bitwise operations on the VPORTx.OUT register.
+
+This comprehensive mapping enables efficient low-level control of GPIO pins by port rather than individually by Arduino pin numbers
+
+
+Arduino pin label (as printed on the board)
+
+MCU port and bit
+
+VPORT register
+
+Bit mask for atomic operations (VPORTx.OUT, VPORTx.OUTSET, etc.)
+
+🧩 Arduino Nano Every — Digital & Analog Pin Mapping
+Arduino Pin	MCU Pin	VPORT	Bit	Mask (hex)	Notes
+D0 (RX)	PA1	VPORTA	1	0x02	UART RX0
+D1 (TX)	PA0	VPORTA	0	0x01	UART TX0
+D2	PA2	VPORTA	2	0x04	—
+D3	PA3	VPORTA	3	0x08	—
+D4	PB0	VPORTB	0	0x01	—
+D5	PC5	VPORTC	5	0x20	—
+D6	PC4	VPORTC	4	0x10	—
+D7	PC3	VPORTC	3	0x08	—
+D8	PC2	VPORTC	2	0x04	—
+D9	PC1	VPORTC	1	0x02	—
+D10 (SS)	PC0	VPORTC	0	0x01	SPI SS
+D11 (MOSI)	PB2	VPORTB	2	0x04	SPI MOSI
+D12 (MISO)	PB3	VPORTB	3	0x08	SPI MISO
+D13 (SCK / LED)	PB1	VPORTB	1	0x02	SPI SCK, onboard LED
+A0	PD2	VPORTD	2	0x04	ADC0
+A1	PD3	VPORTD	3	0x08	ADC1
+A2	PD4	VPORTD	4	0x10	ADC2
+A3	PD5	VPORTD	5	0x20	ADC3
+A4 (SDA)	PD1	VPORTD	1	0x02	I2C SDA
+A5 (SCL)	PD0	VPORTD	0	0x01	I2C SCL
+A6	PD6	VPORTD	6	0x40	ADC6
+A7	PD7	VPORTD	7	0x80	ADC7
+D14 (TX1)	PE0	VPORTE	0	0x01	UART TX1
+D15 (RX1)	PE1	VPORTE	1	0x02	UART RX1
+⚙️ Example: Atomic toggle of A0–A3 (PD2–PD5)
+// Set A0–A3 high
+VPORTD.OUTSET = 0x3C;   // Bits PD2..PD5 = 1
+
+// Set A0–A3 low
+VPORTD.OUTCLR = 0x3C;   // Bits PD2..PD5 = 0
+
+// Toggle A0–A3 simultaneously
+VPORTD.OUTTGL = 0x3C;
+
+🧠 Key takeaways
+
+A0–A7 → PORTD
+
+Main digital pins → PORTA/B/C
+
+Serial1 (D14/D15) → PORTE
+
+VPORTF not connected on the Nano Every board.
+
+Would you like me to include groupings by port (e.g., “which Arduino pins share a single VPORT for atomic updates”) as a compact reference chart too?
+
+You said:
+yes
+ChatGPT said:
+
+Excellent — here’s the Arduino Nano Every (ATmega4809) grouped by VPORT, showing which Arduino pins share the same internal port (and thus can be switched atomically).
+
+🧩 VPORT Grouping Table — Arduino Nano Every
+VPORTA (Base address 0x0400)
+Bit	Mask	MCU Pin	Arduino Label	Notes
+0	0x01	PA0	D1 (TX)	Serial0 TX
+1	0x02	PA1	D0 (RX)	Serial0 RX
+2	0x04	PA2	D2	
+3	0x08	PA3	D3	
+—	—	—	—	(PA4–PA7 not connected)
+
+Group summary:
+All D0–D3 can be toggled atomically using VPORTA.OUT / OUTSET / OUTCLR / OUTTGL.
+
+VPORTB (Base address 0x0420)
+Bit	Mask	MCU Pin	Arduino Label	Notes
+0	0x01	PB0	D4	
+1	0x02	PB1	D13 (LED/SCK)	SPI SCK, onboard LED
+2	0x04	PB2	D11 (MOSI)	SPI MOSI
+3	0x08	PB3	D12 (MISO)	SPI MISO
+—	—	—	—	(PB4–PB7 not connected)
+
+Group summary:
+D4, D11–D13 are atomic via VPORTB.
+
+VPORTC (Base address 0x0440)
+Bit	Mask	MCU Pin	Arduino Label	Notes
+0	0x01	PC0	D10 (SS)	SPI SS
+1	0x02	PC1	D9	
+2	0x04	PC2	D8	
+3	0x08	PC3	D7	
+4	0x10	PC4	D6	
+5	0x20	PC5	D5	
+
+Group summary:
+All D5–D10 share VPORTC and can be toggled simultaneously (atomic 6-bit group).
+
+VPORTD (Base address 0x0460)
+Bit	Mask	MCU Pin	Arduino Label	Notes
+0	0x01	PD0	A5 (SCL)	I2C SCL
+1	0x02	PD1	A4 (SDA)	I2C SDA
+2	0x04	PD2	A0	ADC0
+3	0x08	PD3	A1	ADC1
+4	0x10	PD4	A2	ADC2
+5	0x20	PD5	A3	ADC3
+6	0x40	PD6	A6	ADC6
+7	0x80	PD7	A7	ADC7
+
+Group summary:
+All analog pins A0–A7 (plus I²C lines) are on VPORTD, fully atomic.
+
+VPORTE (Base address 0x0480)
+Bit	Mask	MCU Pin	Arduino Label	Notes
+0	0x01	PE0	D14 (TX1)	Serial1 TX
+1	0x02	PE1	D15 (RX1)	Serial1 RX
+
+Group summary:
+D14/D15 form a tiny 2-pin atomic group under VPORTE.
+
+VPORTF
+
+PF0–PF7 exist in the silicon but are not routed to Arduino Nano Every headers.
+
+You can access them in code, but they have no physical pins on the board.
+
+⚙️ Summary — Atomic Groups
+VPORT	Affected Arduino Pins	Atomic Group Size
+VPORTA	D0–D3	4
+VPORTB	D4, D11–D13	4
+VPORTC	D5–D10	6
+VPORTD	A0–A7 (A4/A5 also I²C)	8
+VPORTE	D14–D15	2
+VPORTF	Not connected	—
+
+Would you like me to generate a compact header file (e.g., NanoEveryPorts.h) defining masks and macros for atomic operations like SET_A0A3_HIGH() or TOGGLE_D5D10()? It makes port-level coding much clearer.
