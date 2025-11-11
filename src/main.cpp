@@ -18,19 +18,24 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 14-Oct-2025 ZV      v1.1.1 added  version info and printout, allow 7300 and 705 default addresses.
 15-Oct-2025 ZV      v1.1.2 fix BCD check in state machine to properly validate BCD upper nibble. SM clarified comments.
 16-Oct-2025 ZV      v1.2 added opportunistic resync on preamble byte mid-frame.
+11-Nov-2025 ZV      v2.0 added CI-V frequency query sender to prompt radio to send freq if no messages seen for a while.
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "1.2"  // software version
+#define VERSION     "2.0" // software version
 
 //=====[ Settings ]===========================================================================================
-#define CIVBAUD      9600  // [baud] Serial port CIV in/out baudrate  IC-705
+#define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
 //#define CIVBAUD        19200  // [baud] Serial port CIV in/out baudrate
 
-#define CIV_ADDR_705  0xA4  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
-#define CIV_ADDR_7300 0x94  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7300
-#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)==CIV_ADDR_7300)) // macro to check if address is valid
-#define CIV_PREAMBLE_BYTE 0xFE  // CIV preamble byte - each frame starts with 0xFE 0xFE
-#define CIV_FRAME_END_BYTE 0xFD  // CIV frame end byte - each frame ends with 0xFD
+constexpr uint8_t CIV_ADDR_705 = 0xA4;  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
+constexpr uint8_t CIV_ADDR_7300 = 0x94;  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-705
+constexpr uint8_t CIV_PREAMBLE_BYTE =0xFE;  // CIV preamble byte - each frame starts with 0xFE 0xFE
+constexpr uint8_t CIV_FRAME_END_BYTE = 0xFD;  // CIV frame end byte - each frame ends with 0xFD
+constexpr uint8_t CIV_CONTROLLER_ADDR = 0xE0; // Arduino/Nano Every default "controller" address
+constexpr uint8_t CIV_QUERY_FREQ_CMD = 0x03; // CIV command to query frequency
+constexpr unsigned long MESSAGE_TIMEOUT_MS = 30 * 1000UL;     // 30s without a complete message triggers a query
+constexpr unsigned long INITIAL_QUERY_DELAY_MS = 1 * 1000UL;  // after boot, if we've never decoded anything, send a query after 1second
+#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)== CIV_ADDR_7300)) // macro to check if address is valid
 
 // a small inline function to improve type safety and avoid double evaluation while keeping the same semantics as a macro.
 static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
@@ -40,6 +45,8 @@ static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
 //=====[ End Settings ]========================================================================================
 // the icom CIV state machine function prototype
 bool icomSM2(uint8_t b, unsigned long * freq);  // prototype for fwd ref
+// forward declaration for CI-V frequency query sender so it can be used from loop()
+void civSendFreqQuery();
     
 void setup() {
 
@@ -71,6 +78,32 @@ void loop() {
     unsigned long freq = 0;
     int BAND = -1;  // band number 0-13, -1 is bogus band
     static int msgCount = 0;
+    // Track timing related to complete CI-V message decodes and query retries
+    static unsigned long lastCompleteMessageMillis = 0;   // last time a full/valid CI-V message was decoded
+    static unsigned long lastQueryMillis = 0;             // last time we actively sent a CI-V frequency query
+    
+    // If we have not decoded a complete message recently, send a CI-V frequency query to prompt a response.
+    // Behavior:
+    //  - On startup (no decodes yet), send one query after INITIAL_QUERY_DELAY_MS to kick things off.
+    //  - During normal operation, if no complete decode has happened in the last MESSAGE_TIMEOUT_MS,
+    //    send a query at most once per MESSAGE_TIMEOUT_MS (throttled by lastQueryMillis) to avoid flooding.
+    unsigned long now = millis();
+    if (lastCompleteMessageMillis == 0) {
+        // Never decoded a full message yet; opportunistically query after a short delay
+        if (now - lastQueryMillis >= INITIAL_QUERY_DELAY_MS) {
+            civSendFreqQuery();
+            lastQueryMillis = now;
+            Serial.println(F("Sent initial CI-V frequency query (no complete messages yet)"));
+        }
+    } else {
+        // Have decoded before; check inactivity window and throttle queries
+        if ((now - lastCompleteMessageMillis) >= MESSAGE_TIMEOUT_MS &&
+            (now - lastQueryMillis) >= MESSAGE_TIMEOUT_MS) {
+            civSendFreqQuery();
+            lastQueryMillis = now;
+            Serial.println(F("Sent CI-V frequency query due to 30s inactivity"));
+        }
+    }
  //while(1){
  //    Serial.print("message count:");
  //    Serial.print(msgCount, HEX);
@@ -83,6 +116,8 @@ Serial.print(incomingCIVByte, HEX); Serial.print(" ");
         // feed each byte into the state machine
         if (icomSM2(incomingCIVByte, &freq)) {  // if we were successful in decoding a full message with valid freq.
             // valid frequency received from Icom CIV
+            // Update the timestamp for the last time a complete/valid message was decoded
+            lastCompleteMessageMillis = now;
             msgCount++;
             //printf("Msg # %d, Freq: %ld Hz, ", msgCount, freq);
             Serial.print(" --> msg #");Serial.print(msgCount, DEC);
@@ -230,4 +265,18 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
 }
 
 
+// Sends a CI-V frequency query to an Icom IC-7300 over Serial1.
+// Uses correct CI-V preamble, controller address, radio address, and terminator.
+void civSendFreqQuery()
+{
+    // Properly framed CI-V message: FE FE E0 94 03 FD
+    static const uint8_t msg[] = {
+        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+        CIV_ADDR_7300,  // to address
+        CIV_CONTROLLER_ADDR, // from address
+        CIV_QUERY_FREQ_CMD, //0x00,  no subcmd for frequency query
+        CIV_FRAME_END_BYTE
+    };
 
+    Serial1.write(msg, sizeof(msg));
+}
