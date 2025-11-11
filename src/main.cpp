@@ -274,7 +274,7 @@ void civSendFreqQuery()
         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
         CIV_ADDR_7300,  // to address
         CIV_CONTROLLER_ADDR, // from address
-        CIV_QUERY_FREQ_CMD, //0x00,  no subcmd for frequency query
+        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
         CIV_FRAME_END_BYTE
     };
 
