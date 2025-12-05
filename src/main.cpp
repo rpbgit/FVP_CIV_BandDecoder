@@ -19,9 +19,11 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 15-Oct-2025 ZV      v1.1.2 fix BCD check in state machine to properly validate BCD upper nibble. SM clarified comments.
 16-Oct-2025 ZV      v1.2 added opportunistic resync on preamble byte mid-frame.
 11-Nov-2025 ZV      v2.0 added CI-V frequency query sender to prompt radio to send freq if no messages seen for a while.
+12-Dec-2025 ZV      v3.0 added GPIO detection of what radio is selected via D2 interrupt and print msg, code cleanup.  A contrived usage 
+                        for sure, as an Interrupt not really needed (polling would work fine too), but use interrupt to demonstrate how to do it.
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "2.0" // software version
+#define VERSION     "3.0" // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
@@ -42,9 +44,19 @@ static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
     return ((b >> 4) <= 9) && ((b & 0x0F) <= 9);
 }
 
+#define RADIO_SELECT_PIN   2   // using GPIO D2 pin to detect what radio is selected
+
+// interrupt service routine for GPIO 2/D2 pin change to detect when ICOM is selected, edge triggered
+volatile bool gIcomSelectedFlagISR = false; // must be volatile since changed in ISR.
+volatile unsigned long gInterruptCounter = 0; // simple counter to track number of interrupts
+void onD2AssertISR() {
+    gInterruptCounter++;
+    gIcomSelectedFlagISR = digitalRead(RADIO_SELECT_PIN) ? true : false; // ICOM selected if D2 is HIGH
+}
 //=====[ End Settings ]========================================================================================
+
 // the icom CIV state machine function prototype
-bool icomSM2(uint8_t b, unsigned long * freq);  // prototype for fwd ref
+bool icomSM2(byte b, unsigned long * freq);  // prototype for fwd ref
 // forward declaration for CI-V frequency query sender so it can be used from loop()
 void civSendFreqQuery();
     
@@ -57,7 +69,12 @@ void setup() {
     delay(2000); // allow enough time on VSCode/PIO for the serial monitor to connect/startup after build and upload.
 
     //=====[ Set pin mode ]===================================================================================
-    // using direct port manipulation for fast operation and atomic (all bits in byte)
+    // GPIO D2 as input for radio select interrupt - TRUE == ICOM is selected. a contrived way to do this, but 
+    //  demonstrates interrupt usage.  Polling would work fine too.   
+    pinMode(2, INPUT); // no need for pull-up since its tied to a NAND gate output
+    gIcomSelectedFlagISR = digitalRead(2) ? true : false; // read the initial state before enabling interrupt
+    attachInterrupt(digitalPinToInterrupt(2), onD2AssertISR, CHANGE); // trigger ISR on a change of state (edge triggered)
+
     //PORTF.DIR = 0x0F; // A3-0 output, A7-4 input, D17, D16, D15, D14 are our BAND outputs, 1 = output
     VPORTD.DIR = 0x0F; // A3-0 output, A7-4 input, D17, D16, D15, D14 are our BAND outputs, 1 = output
 
@@ -104,12 +121,20 @@ void loop() {
             Serial.println(F("Sent CI-V frequency query due to 30s inactivity"));
         }
     }
- //while(1){
- //    Serial.print("message count:");
- //    Serial.print(msgCount, HEX);
- //    Serial.println();
- //    delay(1000);
- //}
+
+    // send message if change in selected radio, demonstrating interrupt usage (a contrived example, polling would work fine too)
+    static bool lastRadioSelected = false;
+    if (gIcomSelectedFlagISR != lastRadioSelected) {
+        lastRadioSelected = gIcomSelectedFlagISR; // save new state
+        if (gIcomSelectedFlagISR) {
+            Serial.print(F("\n\rRADIO - ICOM radio selected via D2 interrupt count: ") );
+        } else {
+            Serial.print(F("\n\rRADIO - Flex radio selected via D2 interrupt count: ") );
+        }
+        Serial.println(gInterruptCounter, DEC);
+    }
+
+    // read bytes from Serial1 if available
     if (Serial1.available() > 0) {
         incomingCIVByte = Serial1.read();
 Serial.print(incomingCIVByte, HEX); Serial.print(" ");
