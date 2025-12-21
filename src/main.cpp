@@ -21,23 +21,25 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 11-Nov-2025 ZV      v2.0 added CI-V frequency query sender to prompt radio to send freq if no messages seen for a while.
 12-Dec-2025 ZV      v3.0 added GPIO detection of what radio is selected via D2 interrupt and print msg, code cleanup.  A contrived usage 
                         for sure, as an Interrupt not really needed (polling would work fine too), but use interrupt to demonstrate how to do it.
+20-Dec-2025 ZV      v3.1 re-added IC-7610 CIV address to valid address list.  send freq query to both 7300, 705, and 7610.
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "3.0" // software version
+#define VERSION     "3.1" // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
 //#define CIVBAUD        19200  // [baud] Serial port CIV in/out baudrate
 
 constexpr uint8_t CIV_ADDR_705 = 0xA4;  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
-constexpr uint8_t CIV_ADDR_7300 = 0x94;  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-705
+constexpr uint8_t CIV_ADDR_7300 = 0x94;  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7300
+constexpr uint8_t CIV_ADDR_7610 = 0x98;  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7610
 constexpr uint8_t CIV_PREAMBLE_BYTE =0xFE;  // CIV preamble byte - each frame starts with 0xFE 0xFE
 constexpr uint8_t CIV_FRAME_END_BYTE = 0xFD;  // CIV frame end byte - each frame ends with 0xFD
 constexpr uint8_t CIV_CONTROLLER_ADDR = 0xE0; // Arduino/Nano Every default "controller" address
 constexpr uint8_t CIV_QUERY_FREQ_CMD = 0x03; // CIV command to query frequency
 constexpr unsigned long MESSAGE_TIMEOUT_MS = 30 * 1000UL;     // 30s without a complete message triggers a query
-constexpr unsigned long INITIAL_QUERY_DELAY_MS = 1 * 1000UL;  // after boot, if we've never decoded anything, send a query after 1second
-#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)== CIV_ADDR_7300)) // macro to check if address is valid
+constexpr unsigned long INITIAL_QUERY_DELAY_MS = 1 * 1000UL;  // after boot, if we've never decoded anything, send a query after 1 second
+#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)== CIV_ADDR_7300 || (b) == CIV_ADDR_7610)) // macro to check if address is valid
 
 // a small inline function to improve type safety and avoid double evaluation while keeping the same semantics as a macro.
 static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
@@ -59,7 +61,9 @@ void onD2AssertISR() {
 bool icomSM2(byte b, unsigned long * freq);  // prototype for fwd ref
 // forward declaration for CI-V frequency query sender so it can be used from loop()
 void civSendFreqQuery();
-    
+void civSendFreqQuery2();
+void civSendFreqQuery3();
+
 void setup() {
 
     Serial.begin(115200);    // Serial monitor
@@ -109,6 +113,8 @@ void loop() {
         // Never decoded a full message yet; opportunistically query after a short delay
         if (now - lastQueryMillis >= INITIAL_QUERY_DELAY_MS) {
             civSendFreqQuery();
+            civSendFreqQuery2();
+            civSendFreqQuery3();
             lastQueryMillis = now;
             Serial.println(F("Sent initial CI-V frequency query (no complete messages yet)"));
         }
@@ -117,6 +123,8 @@ void loop() {
         if ((now - lastCompleteMessageMillis) >= MESSAGE_TIMEOUT_MS &&
             (now - lastQueryMillis) >= MESSAGE_TIMEOUT_MS) {
             civSendFreqQuery();
+            civSendFreqQuery2();
+            civSendFreqQuery3();
             lastQueryMillis = now;
             Serial.println(F("Sent CI-V frequency query due to 30s inactivity"));
         }
@@ -298,6 +306,38 @@ void civSendFreqQuery()
     static const uint8_t msg[] = {
         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
         CIV_ADDR_7300,  // to address
+        CIV_CONTROLLER_ADDR, // from address
+        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
+        CIV_FRAME_END_BYTE
+    };
+
+    Serial1.write(msg, sizeof(msg));
+}
+
+// Sends a CI-V frequency query to an Icom IC-7610 over Serial1.
+// Uses correct CI-V preamble, controller address, radio address, and terminator.
+void civSendFreqQuery2()
+{
+    // Properly framed CI-V message: FE FE E0 98 03 FD
+    static const uint8_t msg[] = {
+        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+        CIV_ADDR_7610,  // to address
+        CIV_CONTROLLER_ADDR, // from address
+        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
+        CIV_FRAME_END_BYTE
+    };
+
+    Serial1.write(msg, sizeof(msg));
+}
+
+// Sends a CI-V frequency query to an Icom IC-705 over Serial1.
+// Uses correct CI-V preamble, controller address, radio address, and terminator.
+void civSendFreqQuery3()
+{
+    // Properly framed CI-V message: FE FE E0 98 03 FD
+    static const uint8_t msg[] = {
+        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+        CIV_ADDR_705,  // to address
         CIV_CONTROLLER_ADDR, // from address
         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
         CIV_FRAME_END_BYTE
