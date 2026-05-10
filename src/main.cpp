@@ -22,9 +22,18 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 12-Dec-2025 ZV      v3.0 added GPIO detection of what radio is selected via D2 interrupt and print msg, code cleanup.  A contrived usage 
                         for sure, as an Interrupt not really needed (polling would work fine too), but use interrupt to demonstrate how to do it.
 20-Dec-2025 ZV      v3.1 re-added IC-7610 CIV address to valid address list.  send freq query to both 7300, 705, and 7610.
+08-May-2026 ZV      v3.2 new PCB artwork added CIV Tx inhibit control jumper via GPIO D3, active low (0 == Tx inhibited, 1 == Tx allowed).  If Tx is 
+                        inhibited, the code will skip sending CI-V frequency queries, which can be useful to avoid interfering with other devices 
+                        on the CI-V bus during testing or normal operation.  Implemented by a N.O. solder jumper on the PCB that ties GPIO D3 to GND 
+                        to inhibit Tx, or leaves it floating/pulled up to allow Tx.  This transparently allows use of the original PCB 
+                        design which did not have this feature.  Code reads the pin state in setup() and sets a global flag 
+                        accordingly, which is checked before sending queries.  Added R8600 address to valid address list, and send queries to it as well.
+                        Updated version number to 3.2.  Caveat emptor, issues abound if more than one radio is on the bus at the same time, as the 
+                        code is not designed to handle that scenario.  Bands table does not include anything agove 432 MHz, so behavior is undefined for 
+                        frequencies above that.  This is a hobby project, not a commercial product, so use at your own risk and expect bugs and issues.    
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "3.1" // software version
+#define VERSION     "3.2" // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
@@ -32,14 +41,15 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 
 constexpr uint8_t CIV_ADDR_705 = 0xA4;  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
 constexpr uint8_t CIV_ADDR_7300 = 0x94;  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7300
-constexpr uint8_t CIV_ADDR_7610 = 0x98;  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7610
+constexpr uint8_t CIV_ADDR_7610 = 0x98;  // CIV input HEX Icom address (0x is prefix) 0x98 = IC-7610
+constexpr uint8_t CIV_ADDR_R8600 = 0x96;  // CIV input HEX Icom address (0x is prefix) 0x96 = IC-R8600
 constexpr uint8_t CIV_PREAMBLE_BYTE =0xFE;  // CIV preamble byte - each frame starts with 0xFE 0xFE
 constexpr uint8_t CIV_FRAME_END_BYTE = 0xFD;  // CIV frame end byte - each frame ends with 0xFD
 constexpr uint8_t CIV_CONTROLLER_ADDR = 0xE0; // Arduino/Nano Every default "controller" address
 constexpr uint8_t CIV_QUERY_FREQ_CMD = 0x03; // CIV command to query frequency
 constexpr unsigned long MESSAGE_TIMEOUT_MS = 30 * 1000UL;     // 30s without a complete message triggers a query
 constexpr unsigned long INITIAL_QUERY_DELAY_MS = 1 * 1000UL;  // after boot, if we've never decoded anything, send a query after 1 second
-#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)== CIV_ADDR_7300 || (b) == CIV_ADDR_7610)) // macro to check if address is valid
+#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)== CIV_ADDR_7300 || (b) == CIV_ADDR_7610 || (b) == CIV_ADDR_R8600)) // macro to check if address is valid
 
 // a small inline function to improve type safety and avoid double evaluation while keeping the same semantics as a macro.
 static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
@@ -63,6 +73,10 @@ bool icomSM2(byte b, unsigned long * freq);  // prototype for fwd ref
 void civSendFreqQuery();
 void civSendFreqQuery2();
 void civSendFreqQuery3();
+void civSendFreqQuery4();
+
+bool gTx_Inhibited = false; // global flag to track if CIV Tx is inhibited
+#define TX_INHIBIT_PIN 3 // GPIO pin to control Tx inhibit, active low (0 = Tx inhibited, 1 = Tx allowed)
 
 void setup() {
 
@@ -79,8 +93,16 @@ void setup() {
     gIcomSelectedFlagISR = digitalRead(2) ? true : false; // read the initial state before enabling interrupt
     attachInterrupt(digitalPinToInterrupt(2), onD2AssertISR, CHANGE); // trigger ISR on a change of state (edge triggered)
 
+    // GPIO D3 as TX_INHIBIT input.  low == Tx inhibited, high == Tx allowed.  This is used to control whether we 
+    // allow transmissions ONTO the CIV bus. active low allows use of original PCB version.
+    pinMode(TX_INHIBIT_PIN, INPUT_PULLUP);
+    delay(1);
+    gTx_Inhibited = digitalRead(TX_INHIBIT_PIN) ? false : true; // Tx inhibited if pin is LOW
+
+    // write all the band output gpio pins atomically with this syntax, and initialize to F (bands all off), 
     //PORTF.DIR = 0x0F; // A3-0 output, A7-4 input, D17, D16, D15, D14 are our BAND outputs, 1 = output
     VPORTD.DIR = 0x0F; // A3-0 output, A7-4 input, D17, D16, D15, D14 are our BAND outputs, 1 = output
+    VPORTD.OUT = 0x0F; // initialize all band bits to 1 (bands off) - adjust if you want a different default state on boot
 
     // PORTx.OUT → write all pins on a port
     // PORTx.OUTSET → set selected pins HIGH
@@ -91,6 +113,8 @@ void setup() {
     Serial.print(F(" Version: ")); Serial.print(VERSION);
     Serial.print(F(" CIV Baud: ")); Serial.println(CIVBAUD);
     Serial.print(F("Compiled on: ")); Serial.print(__DATE__); Serial.print(F(" ")); Serial.println(__TIME__);
+    //Serial.print(F(" TX Inhibit Pin: ")); Serial.println(TX_INHIBIT_PIN);
+    Serial.print(F(" TX Inhibited State: ")); Serial.println(gTx_Inhibited ? F("Yes") : F("No"));
 
 }
     
@@ -115,8 +139,11 @@ void loop() {
             civSendFreqQuery();
             civSendFreqQuery2();
             civSendFreqQuery3();
+            civSendFreqQuery4();
             lastQueryMillis = now;
-            Serial.println(F("Sent initial CI-V frequency query (no complete messages yet)"));
+            if(!gTx_Inhibited) {
+                Serial.println(F("Sent initial CI-V frequency query (no complete messages yet)"));
+            }
         }
     } else {
         // Have decoded before; check inactivity window and throttle queries
@@ -125,8 +152,11 @@ void loop() {
             civSendFreqQuery();
             civSendFreqQuery2();
             civSendFreqQuery3();
+            civSendFreqQuery4();
             lastQueryMillis = now;
-            Serial.println(F("Sent CI-V frequency query due to 30s inactivity"));
+            if(!gTx_Inhibited) {
+                Serial.println(F("Sent CI-V frequency query inactivity timeout"));
+            }
         }
     }
 
@@ -311,6 +341,7 @@ void civSendFreqQuery()
         CIV_FRAME_END_BYTE
     };
 
+    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query 
     Serial1.write(msg, sizeof(msg));
 }
 
@@ -327,6 +358,7 @@ void civSendFreqQuery2()
         CIV_FRAME_END_BYTE
     };
 
+    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query
     Serial1.write(msg, sizeof(msg));
 }
 
@@ -343,5 +375,23 @@ void civSendFreqQuery3()
         CIV_FRAME_END_BYTE
     };
 
+    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query
+    Serial1.write(msg, sizeof(msg));
+}
+
+// Sends a CI-V frequency query to an Icom IC-R8600 over Serial1.
+// Uses correct CI-V preamble, controller address, radio address, and terminator.
+void civSendFreqQuery4()
+{
+    // Properly framed CI-V message: FE FE E0 96 03 FD
+    static const uint8_t msg[] = {
+        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+        CIV_ADDR_R8600,  // to address
+        CIV_CONTROLLER_ADDR, // from address
+        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
+        CIV_FRAME_END_BYTE
+    };
+
+    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query
     Serial1.write(msg, sizeof(msg));
 }
