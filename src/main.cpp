@@ -27,13 +27,12 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
                         on the CI-V bus during testing or normal operation.  Implemented by a N.O. solder jumper on the PCB that ties GPIO D3 to GND 
                         to inhibit Tx, or leaves it floating/pulled up to allow Tx.  This transparently allows use of the original PCB 
                         design which did not have this feature.  Code reads the pin state in setup() and sets a global flag 
-                        accordingly, which is checked before sending queries.  Added R8600 address to valid address list, and send queries to it as well.
-                        Updated version number to 3.2.  Caveat emptor, issues abound if more than one radio is on the bus at the same time, as the 
-                        code is not designed to handle that scenario.  Bands table does not include anything agove 432 MHz, so behavior is undefined for 
-                        frequencies above that.  This is a hobby project, not a commercial product, so use at your own risk and expect bugs and issues.    
+                        accordingly, which is checked before sending queries.
+11-Jun-2026 FVP      v3.2.1 added Icom IC-7300Mk2 CI-V address B6 and added the 7300MK2 civSendFreqQuery2(), the following queries were 
+                        incrementally updated                        
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "3.2" // software version
+#define VERSION     "3.2.1" // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
@@ -41,15 +40,16 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 
 constexpr uint8_t CIV_ADDR_705 = 0xA4;  // CIV input HEX Icom address (0x is prefix) 0xA4 = IC-705
 constexpr uint8_t CIV_ADDR_7300 = 0x94;  // CIV input HEX Icom address (0x is prefix) 0x94 = IC-7300
+constexpr uint8_t CIV_ADDR_7300MK2 = 0xB6;  // CIV input HEX Icom address (0x is prefix) 0xB6 = IC-7300 MK2
 constexpr uint8_t CIV_ADDR_7610 = 0x98;  // CIV input HEX Icom address (0x is prefix) 0x98 = IC-7610
 constexpr uint8_t CIV_ADDR_R8600 = 0x96;  // CIV input HEX Icom address (0x is prefix) 0x96 = IC-R8600
-constexpr uint8_t CIV_PREAMBLE_BYTE =0xFE;  // CIV preamble byte - each frame starts with 0xFE 0xFE
+constexpr uint8_t CIV_PREAMBLE_BYTE =0xFE;  // CIV preamble byte - each frame starts with 0xFE 0xFE7300
 constexpr uint8_t CIV_FRAME_END_BYTE = 0xFD;  // CIV frame end byte - each frame ends with 0xFD
 constexpr uint8_t CIV_CONTROLLER_ADDR = 0xE0; // Arduino/Nano Every default "controller" address
 constexpr uint8_t CIV_QUERY_FREQ_CMD = 0x03; // CIV command to query frequency
 constexpr unsigned long MESSAGE_TIMEOUT_MS = 30 * 1000UL;     // 30s without a complete message triggers a query
 constexpr unsigned long INITIAL_QUERY_DELAY_MS = 1 * 1000UL;  // after boot, if we've never decoded anything, send a query after 1 second
-#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)== CIV_ADDR_7300 || (b) == CIV_ADDR_7610 || (b) == CIV_ADDR_R8600)) // macro to check if address is valid
+#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)== CIV_ADDR_7300||(b)== CIV_ADDR_7300MK2 || (b) == CIV_ADDR_7610 || (b) == CIV_ADDR_R8600)) // macro to check if address is valid
 
 // a small inline function to improve type safety and avoid double evaluation while keeping the same semantics as a macro.
 static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
@@ -345,9 +345,23 @@ void civSendFreqQuery()
     Serial1.write(msg, sizeof(msg));
 }
 
+void civSendFreqQuery2()
+{
+    // Properly framed CI-V message: FE FE E0 94 03 FD
+    static const uint8_t msg[] = {
+        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+        CIV_ADDR_7300MK2,  // to address
+        CIV_CONTROLLER_ADDR, // from address
+        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
+        CIV_FRAME_END_BYTE
+    };
+
+    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query 
+    Serial1.write(msg, sizeof(msg));
+}
 // Sends a CI-V frequency query to an Icom IC-7610 over Serial1.
 // Uses correct CI-V preamble, controller address, radio address, and terminator.
-void civSendFreqQuery2()
+void civSendFreqQuery3()
 {
     // Properly framed CI-V message: FE FE E0 98 03 FD
     static const uint8_t msg[] = {
@@ -364,7 +378,7 @@ void civSendFreqQuery2()
 
 // Sends a CI-V frequency query to an Icom IC-705 over Serial1.
 // Uses correct CI-V preamble, controller address, radio address, and terminator.
-void civSendFreqQuery3()
+void civSendFreqQuery4()
 {
     // Properly framed CI-V message: FE FE E0 98 03 FD
     static const uint8_t msg[] = {
@@ -381,7 +395,7 @@ void civSendFreqQuery3()
 
 // Sends a CI-V frequency query to an Icom IC-R8600 over Serial1.
 // Uses correct CI-V preamble, controller address, radio address, and terminator.
-void civSendFreqQuery4()
+void civSendFreqQuery5()
 {
     // Properly framed CI-V message: FE FE E0 96 03 FD
     static const uint8_t msg[] = {
