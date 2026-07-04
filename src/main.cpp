@@ -28,11 +28,14 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
                         to inhibit Tx, or leaves it floating/pulled up to allow Tx.  This transparently allows use of the original PCB 
                         design which did not have this feature.  Code reads the pin state in setup() and sets a global flag 
                         accordingly, which is checked before sending queries.
-11-Jun-2026 FVP      v3.2.1 added Icom IC-7300Mk2 CI-V address B6 and added the 7300MK2 civSendFreqQuery2(), the following queries were 
-                        incrementally updated                        
+11-Jun-2026 FVP     v3.2.1 added Icom IC-7300Mk2 CI-V address B6 and added the 7300MK2 civSendFreqQuery2(), the following queries were 
+                        incrementally updated
+04-Jul-2026 ZV      v3.3.0  Added unique Controller Address for the decoder (to differentiate controllers), allowed multiple controller 
+                            addresses to be accepted by the state machine by adding CIV_CONTROLLER_ADDRESS_MATCH(b) macro, added comments 
+                            to clarify the state machine.
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "3.2.1" // software version
+#define VERSION     "3.3.0" // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
@@ -45,11 +48,26 @@ constexpr uint8_t CIV_ADDR_7610 = 0x98;  // CIV input HEX Icom address (0x is pr
 constexpr uint8_t CIV_ADDR_R8600 = 0x96;  // CIV input HEX Icom address (0x is prefix) 0x96 = IC-R8600
 constexpr uint8_t CIV_PREAMBLE_BYTE =0xFE;  // CIV preamble byte - each frame starts with 0xFE 0xFE7300
 constexpr uint8_t CIV_FRAME_END_BYTE = 0xFD;  // CIV frame end byte - each frame ends with 0xFD
-constexpr uint8_t CIV_CONTROLLER_ADDR = 0xE0; // Arduino/Nano Every default "controller" address
+constexpr uint8_t CIV_CONTROLLER_MY_ADDR = 0xE1; // Arduino/Nano Every default "controller" address
+constexpr uint8_t CIV_CONTROLLER_GENERIC_ADDR = 0xE0; // generic icom default controller address used by some software
+constexpr uint8_t CIV_CONTROLLER_BCAST_ADDR = 0x00; // broadcast address, used by icom for transcieve notifications, and by some software for generic controller address 
+constexpr uint8_t CIV_CONTROLLER_WINLINK_ADDR = 0xF1; // Winlink RMS controller address, used by some software for generic controller address
 constexpr uint8_t CIV_QUERY_FREQ_CMD = 0x03; // CIV command to query frequency
-constexpr unsigned long MESSAGE_TIMEOUT_MS = 30 * 1000UL;     // 30s without a complete message triggers a query
+constexpr unsigned long MESSAGE_TIMEOUT_MS = 30 * 1000UL;     // inactivity timeout - 30s without a complete message triggers a query if enabled. 
 constexpr unsigned long INITIAL_QUERY_DELAY_MS = 1 * 1000UL;  // after boot, if we've never decoded anything, send a query after 1 second
-#define CIV_ADDRESSES_MATCH(b) (((b)==CIV_ADDR_705 || (b)== CIV_ADDR_7300||(b)== CIV_ADDR_7300MK2 || (b) == CIV_ADDR_7610 || (b) == CIV_ADDR_R8600)) // macro to check if address is valid
+// macro to check if address is valid
+#define CIV_RADIO_ADDRESS_MATCH(b) ( (b)==CIV_ADDR_705 || \
+                                 (b)== CIV_ADDR_7300|| \
+                                 (b)== CIV_ADDR_7300MK2 || \
+                                 (b) == CIV_ADDR_7610 || \
+                                 (b) == CIV_ADDR_R8600) 
+
+// macro to check if address is controller address
+#define CIV_CONTROLLER_ADDRESS_MATCH(b) ((b) == CIV_CONTROLLER_MY_ADDR || \
+                                         (b) == CIV_CONTROLLER_GENERIC_ADDR || \
+                                         (b) == CIV_CONTROLLER_BCAST_ADDR || \
+                                         (b) == CIV_CONTROLLER_WINLINK_ADDR )
+
 
 // a small inline function to improve type safety and avoid double evaluation while keeping the same semantics as a macro.
 static inline bool CIV_IS_VALID_BCD_u8(uint8_t b) {
@@ -96,7 +114,7 @@ void setup() {
     // GPIO D3 as TX_INHIBIT input.  low == Tx inhibited, high == Tx allowed.  This is used to control whether we 
     // allow transmissions ONTO the CIV bus. active low allows use of original PCB version.
     pinMode(TX_INHIBIT_PIN, INPUT_PULLUP);
-    delay(1);
+    delay(10);
     gTx_Inhibited = digitalRead(TX_INHIBIT_PIN) ? false : true; // Tx inhibited if pin is LOW
 
     // write all the band output gpio pins atomically with this syntax, and initialize to F (bands all off), 
@@ -127,6 +145,9 @@ void loop() {
     static unsigned long lastCompleteMessageMillis = 0;   // last time a full/valid CI-V message was decoded
     static unsigned long lastQueryMillis = 0;             // last time we actively sent a CI-V frequency query
     
+    // allow dynamic control of Tx inhibit via GPIO D3 pin, active low (0 == Tx inhibited, 1 == Tx allowed)
+    gTx_Inhibited = digitalRead(TX_INHIBIT_PIN) ? false : true; // Tx inhibited if pin is LOW
+
     // If we have not decoded a complete message recently, send a CI-V frequency query to prompt a response.
     // Behavior:
     //  - On startup (no decodes yet), send one query after INITIAL_QUERY_DELAY_MS to kick things off.
@@ -280,13 +301,12 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
     case 2: if (b == CIV_PREAMBLE_BYTE) { state = 3; rcvBuff[1] = b; } else { state = 1; }; break;
 
     // TO ADDRESS BYTE  (accept only expected destinations)
-    // addresses that use different software 00-trx, e0-pc-ale, winlinkRMS, f1-winlink trimode
-    case 3: if (b == 0x00 || b == 0xE0 || b == 0xF1) { state = 4; rcvBuff[2] = b; }
-          else if ( CIV_ADDRESSES_MATCH(b) ) { state = 6; rcvBuff[2] = b; }
+    case 3: if ( CIV_CONTROLLER_ADDRESS_MATCH(b) ) { state = 4; rcvBuff[2] = b; }
+          else if ( CIV_RADIO_ADDRESS_MATCH(b) ) { state = 6; rcvBuff[2] = b; }
           else { state = 1; }; break;      
           
     // FROM ADDRESS BYTE     
-    case 4: if ( CIV_ADDRESSES_MATCH(b) ) { state = 5; rcvBuff[3] = b; } else { state = 1; }; break;
+    case 4: if ( CIV_RADIO_ADDRESS_MATCH(b) ) { state = 5; rcvBuff[3] = b; } else { state = 1; }; break;
     
     // Command filtering
     case 5: if (b == 0x00 || b == 0x03) { state = 8; rcvBuff[4] = b; } else { state = 1; }; break;
@@ -336,7 +356,7 @@ void civSendFreqQuery()
     static const uint8_t msg[] = {
         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
         CIV_ADDR_7300,  // to address
-        CIV_CONTROLLER_ADDR, // from address
+        CIV_CONTROLLER_MY_ADDR, // from address
         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
         CIV_FRAME_END_BYTE
     };
@@ -351,7 +371,7 @@ void civSendFreqQuery2()
     static const uint8_t msg[] = {
         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
         CIV_ADDR_7300MK2,  // to address
-        CIV_CONTROLLER_ADDR, // from address
+        CIV_CONTROLLER_MY_ADDR, // from address
         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
         CIV_FRAME_END_BYTE
     };
@@ -367,7 +387,7 @@ void civSendFreqQuery3()
     static const uint8_t msg[] = {
         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
         CIV_ADDR_7610,  // to address
-        CIV_CONTROLLER_ADDR, // from address
+        CIV_CONTROLLER_MY_ADDR, // from address
         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
         CIV_FRAME_END_BYTE
     };
@@ -384,7 +404,7 @@ void civSendFreqQuery4()
     static const uint8_t msg[] = {
         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
         CIV_ADDR_705,  // to address
-        CIV_CONTROLLER_ADDR, // from address
+        CIV_CONTROLLER_MY_ADDR, // from address
         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
         CIV_FRAME_END_BYTE
     };
@@ -401,7 +421,7 @@ void civSendFreqQuery5()
     static const uint8_t msg[] = {
         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
         CIV_ADDR_R8600,  // to address
-        CIV_CONTROLLER_ADDR, // from address
+        CIV_CONTROLLER_MY_ADDR, // from address
         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
         CIV_FRAME_END_BYTE
     };
