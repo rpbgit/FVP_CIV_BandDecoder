@@ -186,6 +186,8 @@ void loop() {
     static unsigned long lastCompleteMessageMillis = 0;   // last time a full/valid CI-V message was decoded
     static unsigned long lastQueryMillis = 0;             // last time we actively sent a CI-V frequency query
 
+    // handle entering menu mode if the user types a tilde (~) character on the serial port.  This is a simple way to allow
+    // user interaction without needing a separate button or pin. All CIV message handling is suspended while in menu mode.   
     if (!gMenuMode) {
         while (Serial.available() > 0) {
             const char c = (char)Serial.read();
