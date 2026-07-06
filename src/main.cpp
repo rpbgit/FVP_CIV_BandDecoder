@@ -1,5 +1,10 @@
 #include <Arduino.h>
 
+// includes for simple menu/config system
+#include "ConfigSchema.h"
+#include "ConfigStore.h"
+#include "ConfigUI.h"
+
 // a debug widget to stop/hold further execution of the code until we get sent something from the host
 // it will also print out the line of source code it is being executed in.
 void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INSTEAD`
@@ -33,9 +38,15 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 04-Jul-2026 ZV      v3.3.0  Added unique Controller Address for the decoder (to differentiate controllers), allowed multiple controller 
                             addresses to be accepted by the state machine by adding CIV_CONTROLLER_ADDRESS_MATCH(b) macro, added comments 
                             to clarify the state machine.
+06-Jul-2026 ZV      v4.0.0  Added menuing subsystem to allow user interaction and configuration, we no longer poll a list of
+                              radios, only the configured radio, and no longer hardcoded to accept all 7300, 705, 7610, 7300MK2, or R8600 (which
+                              which was done only to avoid recompilation since no CLI config menu existed).  The user can 
+                              now configure the radio address and baudrate via the menu system.  Now potentially other radios to be on the same bus
+                              with multiple decoder boards each board only listening to its configured target.  Added configurable polling interval 
+                              and inactivity timeout via the menu system.  Added EEPROM persistence of settings.
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "3.3.0" // software version
+#define VERSION     "4.0.0" // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
@@ -54,13 +65,18 @@ constexpr uint8_t CIV_CONTROLLER_BCAST_ADDR = 0x00; // broadcast address, used b
 constexpr uint8_t CIV_CONTROLLER_WINLINK_ADDR = 0xF1; // Winlink RMS controller address, used by some software for generic controller address
 constexpr uint8_t CIV_QUERY_FREQ_CMD = 0x03; // CIV command to query frequency
 constexpr unsigned long MESSAGE_TIMEOUT_MS = 30 * 1000UL;     // inactivity timeout - 30s without a complete message triggers a query if enabled. 
-constexpr unsigned long INITIAL_QUERY_DELAY_MS = 1 * 1000UL;  // after boot, if we've never decoded anything, send a query after 1 second
-// macro to check if address is valid
+constexpr unsigned long INITIAL_QUERY_DELAY_MS = 1 * 1000UL;  // after boot, if we've never decoded anything, send a query after 1 seconds
+
+// macro to check if address is valid, either a known Icom radio address or the configured address, depending on BE_PERMISSIVE setting
+#if BE_PERMISSIVE
 #define CIV_RADIO_ADDRESS_MATCH(b) ( (b)==CIV_ADDR_705 || \
                                  (b)== CIV_ADDR_7300|| \
                                  (b)== CIV_ADDR_7300MK2 || \
                                  (b) == CIV_ADDR_7610 || \
                                  (b) == CIV_ADDR_R8600) 
+#else
+#define CIV_RADIO_ADDRESS_MATCH(b) ( (b) == gCIVAddress ) //  only accept the configured address, no other radios allowed
+#endif
 
 // macro to check if address is controller address
 #define CIV_CONTROLLER_ADDRESS_MATCH(b) ((b) == CIV_CONTROLLER_MY_ADDR || \
@@ -89,20 +105,48 @@ void onD2AssertISR() {
 bool icomSM2(byte b, unsigned long * freq);  // prototype for fwd ref
 // forward declaration for CI-V frequency query sender so it can be used from loop()
 void civSendFreqQuery();
-void civSendFreqQuery2();
-void civSendFreqQuery3();
-void civSendFreqQuery4();
+// void civSendFreqQuery2();
+// void civSendFreqQuery3();
+// void civSendFreqQuery4();
 
-bool gTx_Inhibited = false; // global flag to track if CIV Tx is inhibited
+
+// these are the global configurable menu items defined in ConfigSchema.h, must be declared extern here so they 
+// can be referenced from other files.
+extern bool gTxInhibit; 
+extern int32_t gCIVAddress;
+extern int32_t gCIVBaudRate;
+
+//gTxInhibit = false; // global flag to track if CIV Tx is inhibited
+
 #define TX_INHIBIT_PIN 3 // GPIO pin to control Tx inhibit, active low (0 = Tx inhibited, 1 = Tx allowed)
 
 void setup() {
 
     Serial.begin(115200);    // Serial monitor
-    delay(100);
-    Serial1.begin(CIVBAUD);   // Serial1 for CIV D0-D1
+    delay(2000);
+    
+    Serial.print(F("\nCIV Band decoder started"));
+    Serial.print(F(" Version: ")); Serial.print(VERSION);
+    Serial.print(F("\nCompiled on: ")); Serial.print(__DATE__); Serial.print(F(" ")); Serial.println(__TIME__);
+    Serial.print(F("\nEnter tilde (~) for configuration menu\n\n"));
+
+    
+    // Build dynamic menu structures from the schema table.
+    initMenus();
+
+    // Load persisted values if valid, otherwise keep compiled defaults.
+    if (loadConfigFromEeprom()) {
+        Serial.println("Loaded config from EEPROM");
+    } else {
+        Serial.println("Using default config");
+    }
+
+    // Print runtime config snapshot
+    printCurrentConfig();
+
+    // setup the CIV serial port.
+    Serial1.begin(gCIVBaudRate);   // Serial1 for CIV D0-D1
     Serial1.setTimeout(10);
-    delay(2000); // allow enough time on VSCode/PIO for the serial monitor to connect/startup after build and upload.
 
     //=====[ Set pin mode ]===================================================================================
     // GPIO D2 as input for radio select interrupt - TRUE == ICOM is selected. a contrived way to do this, but 
@@ -115,27 +159,24 @@ void setup() {
     // allow transmissions ONTO the CIV bus. active low allows use of original PCB version.
     pinMode(TX_INHIBIT_PIN, INPUT_PULLUP);
     delay(10);
-    gTx_Inhibited = digitalRead(TX_INHIBIT_PIN) ? false : true; // Tx inhibited if pin is LOW
 
-    // write all the band output gpio pins atomically with this syntax, and initialize to F (bands all off), 
+// write all the band output gpio pins atomically with this syntax, and initialize to F (bands all off), 
     //PORTF.DIR = 0x0F; // A3-0 output, A7-4 input, D17, D16, D15, D14 are our BAND outputs, 1 = output
     VPORTD.DIR = 0x0F; // A3-0 output, A7-4 input, D17, D16, D15, D14 are our BAND outputs, 1 = output
     VPORTD.OUT = 0x0F; // initialize all band bits to 1 (bands off) - adjust if you want a different default state on boot
-
+    
     // PORTx.OUT → write all pins on a port
     // PORTx.OUTSET → set selected pins HIGH
     // PORTx.OUTCLR → clear selected pins LOW
     // PORTx.OUTTGL → toggle selected pins   
 
-    Serial.print(F("\nCIV Band decoder started"));
-    Serial.print(F(" Version: ")); Serial.print(VERSION);
-    Serial.print(F(" CIV Baud: ")); Serial.println(CIVBAUD);
-    Serial.print(F("Compiled on: ")); Serial.print(__DATE__); Serial.print(F(" ")); Serial.println(__TIME__);
-    //Serial.print(F(" TX Inhibit Pin: ")); Serial.println(TX_INHIBIT_PIN);
-    Serial.print(F(" TX Inhibited State: ")); Serial.println(gTx_Inhibited ? F("Yes") : F("No"));
 
 }
-    
+static bool gMenuMode = false;
+extern bool gExitMenuFlag;
+extern int32_t gPollingInterval;
+extern int32_t gPollingInactivityTimeout;
+
 void loop() {
     byte incomingCIVByte = 0;
     unsigned long freq = 0;
@@ -144,42 +185,75 @@ void loop() {
     // Track timing related to complete CI-V message decodes and query retries
     static unsigned long lastCompleteMessageMillis = 0;   // last time a full/valid CI-V message was decoded
     static unsigned long lastQueryMillis = 0;             // last time we actively sent a CI-V frequency query
-    
-    // allow dynamic control of Tx inhibit via GPIO D3 pin, active low (0 == Tx inhibited, 1 == Tx allowed)
-    gTx_Inhibited = digitalRead(TX_INHIBIT_PIN) ? false : true; // Tx inhibited if pin is LOW
 
-    // If we have not decoded a complete message recently, send a CI-V frequency query to prompt a response.
+    if (!gMenuMode) {
+        while (Serial.available() > 0) {
+            const char c = (char)Serial.read();
+
+            // Trigger menu when '~' appears anywhere in incoming serial stream.
+            // Optional: also accept Ctrl-C (0x03) if desired.
+            if (c != '~') {
+                // if (c != '~' && c != 0x03) {  // use this instead to allow Ctrl-C too
+                continue;
+            }
+
+            gMenuMode = true;
+            gExitMenuFlag = false;
+            menu.begin(&mainMenu);
+
+            while (!gExitMenuFlag) {
+                menu.poll();
+            }
+
+            gExitMenuFlag = false;
+            gMenuMode = false;
+            Serial.println(F("Exited menu mode"));
+
+            break;
+        }
+    }
+
+    // allow dynamic control of Tx inhibit via GPIO D3 pin, active low (0 == Tx inhibited, 1 == Tx allowed)
+    // TX_INHIBIT_PIN GPIO3 pin is allowed to OVERRIDE menu/config settings
+    if(digitalRead(TX_INHIBIT_PIN) == LOW) {
+        //Serial.println(F("Tx Inhibit GPIO3 OVERRIDE is ENABLED (D3 pin LOW) - CI-V frequency queries will NOT be sent"));
+        gTxInhibit = digitalRead(TX_INHIBIT_PIN) ? false : true; // Tx inhibited if pin is LOW
+    } 
+
+    // Query management - If we have not decoded a complete message recently, send a CI-V frequency query to prompt a response.
     // Behavior:
-    //  - On startup (no decodes yet), send one query after INITIAL_QUERY_DELAY_MS to kick things off.
+    //  - On startup (no decodes yet), send query at PollingInterval rate to kick things off.
     //  - During normal operation, if no complete decode has happened in the last MESSAGE_TIMEOUT_MS,
     //    send a query at most once per MESSAGE_TIMEOUT_MS (throttled by lastQueryMillis) to avoid flooding.
     unsigned long now = millis();
-    if (lastCompleteMessageMillis == 0) {
+    if (lastCompleteMessageMillis == 0) {  // for initial startup, we have never decoded a complete message yet
         // Never decoded a full message yet; opportunistically query after a short delay
-        if (now - lastQueryMillis >= INITIAL_QUERY_DELAY_MS) {
+        if ((now - lastQueryMillis) >= INITIAL_QUERY_DELAY_MS &&
+            (now - lastQueryMillis) >= gPollingInterval) { // throttle queries @ polling interval rate
             civSendFreqQuery();
-            civSendFreqQuery2();
-            civSendFreqQuery3();
-            civSendFreqQuery4();
-            lastQueryMillis = now;
-            if(!gTx_Inhibited) {
-                Serial.println(F("Sent initial CI-V frequency query (no complete messages yet)"));
+            // civSendFreqQuery2();
+            // civSendFreqQuery3();
+            // civSendFreqQuery4();
+            if(!gTxInhibit) {
+                Serial.print(F("Sent initial CI-V frequency query (no complete messages yet) delta ms: "));
+                Serial.println(now - lastQueryMillis);
             }
-        }
-    } else {
-        // Have decoded before; check inactivity window and throttle queries
-        if ((now - lastCompleteMessageMillis) >= MESSAGE_TIMEOUT_MS &&
-            (now - lastQueryMillis) >= MESSAGE_TIMEOUT_MS) {
-            civSendFreqQuery();
-            civSendFreqQuery2();
-            civSendFreqQuery3();
-            civSendFreqQuery4();
             lastQueryMillis = now;
-            if(!gTx_Inhibited) {
+        }
+    } else { // for normal operation, if we have decoded a complete message before, check for inactivity and send query if needed
+        // Have decoded before; check inactivity window and throttle queries
+        if ((now - lastCompleteMessageMillis) >= gPollingInactivityTimeout &&
+            (now - lastQueryMillis) >= gPollingInterval) { // throttle queries @ polling interval rate
+            civSendFreqQuery();
+            // civSendFreqQuery2();
+            // civSendFreqQuery3();
+            // civSendFreqQuery4();
+            if(!gTxInhibit) {
                 Serial.println(F("Sent CI-V frequency query inactivity timeout"));
             }
+            lastQueryMillis = now;
         }
-    }
+    } // end of query management
 
     // send message if change in selected radio, demonstrating interrupt usage (a contrived example, polling would work fine too)
     static bool lastRadioSelected = false;
@@ -196,7 +270,7 @@ void loop() {
     // read bytes from Serial1 if available
     if (Serial1.available() > 0) {
         incomingCIVByte = Serial1.read();
-Serial.print(incomingCIVByte, HEX); Serial.print(" ");
+        Serial.print(incomingCIVByte, HEX); Serial.print(" ");  // monitor the bus activity
         // feed each byte into the state machine
         if (icomSM2(incomingCIVByte, &freq)) {  // if we were successful in decoding a full message with valid freq.
             // valid frequency received from Icom CIV
@@ -352,80 +426,82 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
 // Uses correct CI-V preamble, controller address, radio address, and terminator.
 void civSendFreqQuery()
 {
-    // Properly framed CI-V message: FE FE E0 94 03 FD
-    static const uint8_t msg[] = {
+    if(gTxInhibit) return; // if Tx is inhibited, skip sending the query 
+    
+    // Properly framed CI-V message
+    static uint8_t msg[] = {
         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
         CIV_ADDR_7300,  // to address
         CIV_CONTROLLER_MY_ADDR, // from address
         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
         CIV_FRAME_END_BYTE
     };
+    msg[2] = (uint8_t)gCIVAddress; // OVERRIDE to dynamically set the radio address based on config
 
-    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query 
     Serial1.write(msg, sizeof(msg));
 }
 
-void civSendFreqQuery2()
-{
-    // Properly framed CI-V message: FE FE E0 94 03 FD
-    static const uint8_t msg[] = {
-        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-        CIV_ADDR_7300MK2,  // to address
-        CIV_CONTROLLER_MY_ADDR, // from address
-        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-        CIV_FRAME_END_BYTE
-    };
+// void civSendFreqQuery2()
+// {
+//     // Properly framed CI-V message: FE FE E0 94 03 FD
+//     static const uint8_t msg[] = {
+//         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+//         CIV_ADDR_7300MK2,  // to address
+//         CIV_CONTROLLER_MY_ADDR, // from address
+//         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
+//         CIV_FRAME_END_BYTE
+//     };
 
-    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query 
-    Serial1.write(msg, sizeof(msg));
-}
-// Sends a CI-V frequency query to an Icom IC-7610 over Serial1.
-// Uses correct CI-V preamble, controller address, radio address, and terminator.
-void civSendFreqQuery3()
-{
-    // Properly framed CI-V message: FE FE E0 98 03 FD
-    static const uint8_t msg[] = {
-        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-        CIV_ADDR_7610,  // to address
-        CIV_CONTROLLER_MY_ADDR, // from address
-        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-        CIV_FRAME_END_BYTE
-    };
+//     if(gTxInhibit) return; // if Tx is inhibited, skip sending the query 
+//     Serial1.write(msg, sizeof(msg));
+// }
+// // Sends a CI-V frequency query to an Icom IC-7610 over Serial1.
+// // Uses correct CI-V preamble, controller address, radio address, and terminator.
+// void civSendFreqQuery3()
+// {
+//     // Properly framed CI-V message: FE FE E0 98 03 FD
+//     static const uint8_t msg[] = {
+//         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+//         CIV_ADDR_7610,  // to address
+//         CIV_CONTROLLER_MY_ADDR, // from address
+//         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
+//         CIV_FRAME_END_BYTE
+//     };
 
-    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query
-    Serial1.write(msg, sizeof(msg));
-}
+//     if(gTxInhibit) return; // if Tx is inhibited, skip sending the query
+//     Serial1.write(msg, sizeof(msg));
+// }
 
-// Sends a CI-V frequency query to an Icom IC-705 over Serial1.
-// Uses correct CI-V preamble, controller address, radio address, and terminator.
-void civSendFreqQuery4()
-{
-    // Properly framed CI-V message: FE FE E0 98 03 FD
-    static const uint8_t msg[] = {
-        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-        CIV_ADDR_705,  // to address
-        CIV_CONTROLLER_MY_ADDR, // from address
-        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-        CIV_FRAME_END_BYTE
-    };
+// // Sends a CI-V frequency query to an Icom IC-705 over Serial1.
+// // Uses correct CI-V preamble, controller address, radio address, and terminator.
+// void civSendFreqQuery4()
+// {
+//     // Properly framed CI-V message: FE FE E0 98 03 FD
+//     static const uint8_t msg[] = {
+//         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+//         CIV_ADDR_705,  // to address
+//         CIV_CONTROLLER_MY_ADDR, // from address
+//         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
+//         CIV_FRAME_END_BYTE
+//     };
 
-    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query
-    Serial1.write(msg, sizeof(msg));
-}
+//     if(gTxInhibit) return; // if Tx is inhibited, skip sending the query
+//     Serial1.write(msg, sizeof(msg));
+// }
 
-// Sends a CI-V frequency query to an Icom IC-R8600 over Serial1.
-// Uses correct CI-V preamble, controller address, radio address, and terminator.
-void civSendFreqQuery5()
-{
-    // Properly framed CI-V message: FE FE E0 96 03 FD
-    static const uint8_t msg[] = {
-        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-        CIV_ADDR_R8600,  // to address
-        CIV_CONTROLLER_MY_ADDR, // from address
-        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-        CIV_FRAME_END_BYTE
-    };
+// // Sends a CI-V frequency query to an Icom IC-R8600 over Serial1.
+// // Uses correct CI-V preamble, controller address, radio address, and terminator.
+// void civSendFreqQuery5()
+// {
+//     // Properly framed CI-V message: FE FE E0 96 03 FD
+//     static const uint8_t msg[] = {
+//         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+//         CIV_ADDR_R8600,  // to address
+//         CIV_CONTROLLER_MY_ADDR, // from address
+//         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
+//         CIV_FRAME_END_BYTE
+//     };
 
-    if(gTx_Inhibited) return; // if Tx is inhibited, skip sending the query
-    Serial1.write(msg, sizeof(msg));
-}
+//     if(gTxInhibit) return; // if Tx is inhibited, skip sending the query
+//     Serial1.write(msg, sizeof(msg));
+// }
