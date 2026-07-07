@@ -104,7 +104,7 @@ void onD2AssertISR() {
 // the icom CIV state machine function prototype
 bool icomSM2(byte b, unsigned long * freq);  // prototype for fwd ref
 void civSendFreqQuery(); // forward declaration for CI-V frequency query sender so it can be used from loop()
-void menu_poll();  // forward declaration for menu polling function so it can be used from loop()
+void menu_monitor();  // forward declaration for menu polling function so it can be used from loop()
 
 // these are the global configurable menu items defined in ConfigSchema.h, must be declared extern here so they 
 // can be referenced from other files.
@@ -180,7 +180,7 @@ void loop() {
     static unsigned long lastQueryMillis = 0;             // last time we actively sent a CI-V frequency query
 
     // menu mode intercept - if the user types a tilde (~) character on the serial port, we enter menu mode and allow configuration of settings.
-    menu_poll();  // poll the menu system to allow user interaction if in menu mode
+    menu_monitor();  // poll the menu system to allow user interaction if in menu mode
 
     // allow dynamic control of Tx inhibit via GPIO D3 pin, active low (0 == Tx inhibited, 1 == Tx allowed)
     // NOTE: TX_INHIBIT_PIN GPIO3 pin is allowed to OVERRIDE menu/config settings
@@ -422,7 +422,7 @@ void civSendFreqQuery()
     serial1MarkSent();
 }
 
-void menu_poll() 
+void menu_monitor() 
 {
 // handle entering menu mode if the user types a tilde (~) character on the serial port.  This is a simple way to allow
 // user interaction without needing a separate button or pin. All CIV message handling is suspended while in menu mode.   
