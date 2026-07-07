@@ -3,7 +3,7 @@
 
 // Backing storage for runtime-configurable settings.  these must be global so they can be referenced by the the setup()
 //  and loop() functions, and also by the menu system.
-bool gTxInhibit = false;  // global flag to track if CIV Tx is inhibited
+bool gPoll_Inhibit = false;  // global flag to track if CIV Tx is inhibited
 int32_t gCIVAddress = 0x94;
 int32_t gCIVBaudRate = 115200;
 int32_t gPollingInterval = 1000; // default polling interval in milliseconds
@@ -13,7 +13,7 @@ bool gExitMenuFlag = false; // flag to signal menu exit and return to normal ope
 // Single source of truth for editable settings.
 // Add/remove settings here and the UI/store layers adapt automatically.
 const SettingDescriptor settingTable[kSettingCount] = {
-    { lblTxInhibit, MENU_BOOL, &gTxInhibit, nullptr, 0, 1 },
+    { lblTxInhibit, MENU_BOOL, &gPoll_Inhibit, nullptr, 0, 1 },
     { lblCiv, MENU_INT, nullptr, &gCIVAddress, 0, 255 },
     { lblBaud, MENU_INT, nullptr, &gCIVBaudRate, 1200, 115200 },
     { lblPollingInterval, MENU_INT, nullptr, &gPollingInterval, 1000, 30000 },

@@ -103,20 +103,14 @@ void onD2AssertISR() {
 
 // the icom CIV state machine function prototype
 bool icomSM2(byte b, unsigned long * freq);  // prototype for fwd ref
-// forward declaration for CI-V frequency query sender so it can be used from loop()
-void civSendFreqQuery();
-// void civSendFreqQuery2();
-// void civSendFreqQuery3();
-// void civSendFreqQuery4();
-
+void civSendFreqQuery(); // forward declaration for CI-V frequency query sender so it can be used from loop()
+void menu_poll();  // forward declaration for menu polling function so it can be used from loop()
 
 // these are the global configurable menu items defined in ConfigSchema.h, must be declared extern here so they 
 // can be referenced from other files.
-extern bool gTxInhibit; 
+extern bool gPoll_Inhibit; 
 extern int32_t gCIVAddress;
 extern int32_t gCIVBaudRate;
-
-//gTxInhibit = false; // global flag to track if CIV Tx is inhibited
 
 #define TX_INHIBIT_PIN 3 // GPIO pin to control Tx inhibit, active low (0 = Tx inhibited, 1 = Tx allowed)
 
@@ -169,9 +163,8 @@ void setup() {
     // PORTx.OUTSET → set selected pins HIGH
     // PORTx.OUTCLR → clear selected pins LOW
     // PORTx.OUTTGL → toggle selected pins   
-
-
 }
+
 static bool gMenuMode = false;
 extern bool gExitMenuFlag;
 extern int32_t gPollingInterval;
@@ -186,40 +179,14 @@ void loop() {
     static unsigned long lastCompleteMessageMillis = 0;   // last time a full/valid CI-V message was decoded
     static unsigned long lastQueryMillis = 0;             // last time we actively sent a CI-V frequency query
 
-    // handle entering menu mode if the user types a tilde (~) character on the serial port.  This is a simple way to allow
-    // user interaction without needing a separate button or pin. All CIV message handling is suspended while in menu mode.   
-    if (!gMenuMode) {
-        while (Serial.available() > 0) {
-            const char c = (char)Serial.read();
-
-            // Trigger menu when '~' appears anywhere in incoming serial stream.
-            // Optional: also accept Ctrl-C (0x03) if desired.
-            if (c != '~') {
-                // if (c != '~' && c != 0x03) {  // use this instead to allow Ctrl-C too
-                continue;
-            }
-
-            gMenuMode = true;
-            gExitMenuFlag = false;
-            menu.begin(&mainMenu);
-
-            while (!gExitMenuFlag) {
-                menu.poll();
-            }
-
-            gExitMenuFlag = false;
-            gMenuMode = false;
-            Serial.println(F("Exited menu mode"));
-
-            break;
-        }
-    }
+    // menu mode intercept - if the user types a tilde (~) character on the serial port, we enter menu mode and allow configuration of settings.
+    menu_poll();  // poll the menu system to allow user interaction if in menu mode
 
     // allow dynamic control of Tx inhibit via GPIO D3 pin, active low (0 == Tx inhibited, 1 == Tx allowed)
-    // TX_INHIBIT_PIN GPIO3 pin is allowed to OVERRIDE menu/config settings
+    // NOTE: TX_INHIBIT_PIN GPIO3 pin is allowed to OVERRIDE menu/config settings
     if(digitalRead(TX_INHIBIT_PIN) == LOW) {
         //Serial.println(F("Tx Inhibit GPIO3 OVERRIDE is ENABLED (D3 pin LOW) - CI-V frequency queries will NOT be sent"));
-        gTxInhibit = digitalRead(TX_INHIBIT_PIN) ? false : true; // Tx inhibited if pin is LOW
+        gPoll_Inhibit = digitalRead(TX_INHIBIT_PIN) ? false : true; // Tx inhibited if pin is LOW
     } 
 
     // Query management - If we have not decoded a complete message recently, send a CI-V frequency query to prompt a response.
@@ -233,11 +200,8 @@ void loop() {
         if ((now - lastQueryMillis) >= INITIAL_QUERY_DELAY_MS &&
             (now - lastQueryMillis) >= gPollingInterval) { // throttle queries @ polling interval rate
             civSendFreqQuery();
-            // civSendFreqQuery2();
-            // civSendFreqQuery3();
-            // civSendFreqQuery4();
-            if(!gTxInhibit) {
-                Serial.print(F("Sent initial CI-V frequency query (no complete messages yet) delta ms: "));
+            if(!gPoll_Inhibit) {
+                Serial.print(F("Sent initial CI-V query (no complete messages yet) delta ms: "));
                 Serial.println(now - lastQueryMillis);
             }
             lastQueryMillis = now;
@@ -247,11 +211,8 @@ void loop() {
         if ((now - lastCompleteMessageMillis) >= gPollingInactivityTimeout &&
             (now - lastQueryMillis) >= gPollingInterval) { // throttle queries @ polling interval rate
             civSendFreqQuery();
-            // civSendFreqQuery2();
-            // civSendFreqQuery3();
-            // civSendFreqQuery4();
-            if(!gTxInhibit) {
-                Serial.println(F("Sent CI-V frequency query inactivity timeout"));
+            if(!gPoll_Inhibit) {
+                Serial.println(F("Sent CI-V query inactivity timeout"));
             }
             lastQueryMillis = now;
         }
@@ -423,87 +384,72 @@ bool icomSM2(byte b, unsigned long * freq) {      // state machine
 		return false; // valid Message not complete yet, keep feeding the pig until a full message is received
 }
 
-
 // Sends a CI-V frequency query to an Icom IC-7300 over Serial1.
 // Uses correct CI-V preamble, controller address, radio address, and terminator.
-void civSendFreqQuery()
-{
-    if(gTxInhibit) return; // if Tx is inhibited, skip sending the query 
-    
-    // Properly framed CI-V message
-    static uint8_t msg[] = {
-        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-        CIV_ADDR_7300,  // to address
-        CIV_CONTROLLER_MY_ADDR, // from address
-        CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-        CIV_FRAME_END_BYTE
-    };
-    msg[2] = (uint8_t)gCIVAddress; // OVERRIDE to dynamically set the radio address based on config
+// transmission pacing: transmissions are inhibited and if enough time has passed since the last transmission to avoid flooding the bus.
+// 
+static unsigned long gLastSerial1SendMs = 0;
+constexpr unsigned long SERIAL1_MIN_GAP_MS = 250; // minimum gap between Serial1 sends to avoid flooding the bus
 
-    Serial1.write(msg, sizeof(msg));
+static bool serial1CanSendNow() {
+    unsigned long now = millis();
+    return (now - gLastSerial1SendMs) >= SERIAL1_MIN_GAP_MS;
 }
 
-// void civSendFreqQuery2()
-// {
-//     // Properly framed CI-V message: FE FE E0 94 03 FD
-//     static const uint8_t msg[] = {
-//         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-//         CIV_ADDR_7300MK2,  // to address
-//         CIV_CONTROLLER_MY_ADDR, // from address
-//         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-//         CIV_FRAME_END_BYTE
-//     };
+static void serial1MarkSent() {
+    gLastSerial1SendMs = millis();
+}
+void civSendFreqQuery()
+{
+    if (gPoll_Inhibit) return;
 
-//     if(gTxInhibit) return; // if Tx is inhibited, skip sending the query 
-//     Serial1.write(msg, sizeof(msg));
-// }
-// // Sends a CI-V frequency query to an Icom IC-7610 over Serial1.
-// // Uses correct CI-V preamble, controller address, radio address, and terminator.
-// void civSendFreqQuery3()
-// {
-//     // Properly framed CI-V message: FE FE E0 98 03 FD
-//     static const uint8_t msg[] = {
-//         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-//         CIV_ADDR_7610,  // to address
-//         CIV_CONTROLLER_MY_ADDR, // from address
-//         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-//         CIV_FRAME_END_BYTE
-//     };
+    // ask if we can send now, if not, skip sending to avoid flooding the bus
+    if (!serial1CanSendNow()) { 
+        Serial.println(F("\n **PACING** "));
+        return;
+    } 
 
-//     if(gTxInhibit) return; // if Tx is inhibited, skip sending the query
-//     Serial1.write(msg, sizeof(msg));
-// }
+    static uint8_t msg[] = {
+        CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
+        CIV_ADDR_7300,
+        CIV_CONTROLLER_MY_ADDR,
+        CIV_QUERY_FREQ_CMD,
+        CIV_FRAME_END_BYTE
+    };
+    msg[2] = (uint8_t)gCIVAddress;  // override dest addr to dynamically set the radio address based on config
 
-// // Sends a CI-V frequency query to an Icom IC-705 over Serial1.
-// // Uses correct CI-V preamble, controller address, radio address, and terminator.
-// void civSendFreqQuery4()
-// {
-//     // Properly framed CI-V message: FE FE E0 98 03 FD
-//     static const uint8_t msg[] = {
-//         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-//         CIV_ADDR_705,  // to address
-//         CIV_CONTROLLER_MY_ADDR, // from address
-//         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-//         CIV_FRAME_END_BYTE
-//     };
+    Serial1.write(msg, sizeof(msg));
+    serial1MarkSent();
+}
 
-//     if(gTxInhibit) return; // if Tx is inhibited, skip sending the query
-//     Serial1.write(msg, sizeof(msg));
-// }
+void menu_poll() 
+{
+// handle entering menu mode if the user types a tilde (~) character on the serial port.  This is a simple way to allow
+// user interaction without needing a separate button or pin. All CIV message handling is suspended while in menu mode.   
+    if (!gMenuMode) {
+        while (Serial.available() > 0) {
+            const char c = (char)Serial.read();
 
-// // Sends a CI-V frequency query to an Icom IC-R8600 over Serial1.
-// // Uses correct CI-V preamble, controller address, radio address, and terminator.
-// void civSendFreqQuery5()
-// {
-//     // Properly framed CI-V message: FE FE E0 96 03 FD
-//     static const uint8_t msg[] = {
-//         CIV_PREAMBLE_BYTE, CIV_PREAMBLE_BYTE,
-//         CIV_ADDR_R8600,  // to address
-//         CIV_CONTROLLER_MY_ADDR, // from address
-//         CIV_QUERY_FREQ_CMD, //0x00,   no subcmd for frequency query
-//         CIV_FRAME_END_BYTE
-//     };
+            // Trigger menu when '~' appears anywhere in incoming serial stream.
+            // Optional: also accept Ctrl-C (0x03) if desired.
+            if (c != '~') {
+                // if (c != '~' && c != 0x03) {  // use this instead to allow Ctrl-C too
+                continue;
+            }
 
-//     if(gTxInhibit) return; // if Tx is inhibited, skip sending the query
-//     Serial1.write(msg, sizeof(msg));
-// }
+            gMenuMode = true;
+            gExitMenuFlag = false;
+            menu.begin(&mainMenu);
+
+            while (!gExitMenuFlag) {
+                menu.poll();
+            }
+
+            gExitMenuFlag = false;
+            gMenuMode = false;
+            Serial.println(F("Exited menu mode"));
+
+            break;
+        }
+    }
+}
