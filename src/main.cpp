@@ -38,7 +38,7 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 04-Jul-2026 ZV      v3.3.0  Added unique Controller Address for the decoder (to differentiate controllers), allowed multiple controller 
                             addresses to be accepted by the state machine by adding CIV_CONTROLLER_ADDRESS_MATCH(b) macro, added comments 
                             to clarify the state machine.
-06-Jul-2026 ZV      v4.0.0  Added menuing subsystem to allow user interaction and configuration, we no longer poll a list of
+06-Jul-2026 ZV      v4.0.1  Added menuing subsystem to allow user interaction and configuration, we no longer poll a list of
                               radios, only the configured radio, and no longer hardcoded to accept all 7300, 705, 7610, 7300MK2, or R8600 (which
                               which was done only to avoid recompilation since no CLI config menu existed).  The user can 
                               now configure the radio address and baudrate via the menu system.  Now potentially other radios to be on the same bus
@@ -46,7 +46,7 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
                               and inactivity timeout via the menu system.  Added EEPROM persistence of settings.
 */
 // REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "4.0.0" // software version
+#define VERSION     "4.0.1" // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
