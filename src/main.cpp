@@ -17,36 +17,45 @@ void _stall(){  // DO NOT USE THIS FUNCTION DIRECTLY, USE THE stall() MACRO INST
 // add this macro to any line of code you want to stop at for debugging, hit any key to continue execution
 // example:  int x = 5; stall();
 #define stall() Serial.print("Stall @ line #");Serial.println(__LINE__);_stall();
-    
+
 /*
-7-Oct-2025 Wa9fvP   v1.1  removed unused #defines.  Deleted commeted stuff at the battom . 
+7-Oct-2025 Wa9fvP   v1.1  removed unused #defines.  Deleted commeted stuff at the battom .
 14-Oct-2025 ZV      v1.1.1 added  version info and printout, allow 7300 and 705 default addresses.
 15-Oct-2025 ZV      v1.1.2 fix BCD check in state machine to properly validate BCD upper nibble. SM clarified comments.
 16-Oct-2025 ZV      v1.2 added opportunistic resync on preamble byte mid-frame.
 11-Nov-2025 ZV      v2.0 added CI-V frequency query sender to prompt radio to send freq if no messages seen for a while.
-12-Dec-2025 ZV      v3.0 added GPIO detection of what radio is selected via D2 interrupt and print msg, code cleanup.  A contrived usage 
+12-Dec-2025 ZV      v3.0 added GPIO detection of what radio is selected via D2 interrupt and print msg, code cleanup.  A contrived usage
                         for sure, as an Interrupt not really needed (polling would work fine too), but use interrupt to demonstrate how to do it.
 20-Dec-2025 ZV      v3.1 re-added IC-7610 CIV address to valid address list.  send freq query to both 7300, 705, and 7610.
-08-May-2026 ZV      v3.2 new PCB artwork added CIV Tx inhibit control jumper via GPIO D3, active low (0 == Tx inhibited, 1 == Tx allowed).  If Tx is 
-                        inhibited, the code will skip sending CI-V frequency queries, which can be useful to avoid interfering with other devices 
-                        on the CI-V bus during testing or normal operation.  Implemented by a N.O. solder jumper on the PCB that ties GPIO D3 to GND 
-                        to inhibit Tx, or leaves it floating/pulled up to allow Tx.  This transparently allows use of the original PCB 
-                        design which did not have this feature.  Code reads the pin state in setup() and sets a global flag 
+08-May-2026 ZV      v3.2 new PCB artwork added CIV Tx inhibit control jumper via GPIO D3, active low (0 == Tx inhibited, 1 == Tx allowed).  If Tx is
+                        inhibited, the code will skip sending CI-V frequency queries, which can be useful to avoid interfering with other devices
+                        on the CI-V bus during testing or normal operation.  Implemented by a N.O. solder jumper on the PCB that ties GPIO D3 to GND
+                        to inhibit Tx, or leaves it floating/pulled up to allow Tx.  This transparently allows use of the original PCB
+                        design which did not have this feature.  Code reads the pin state in setup() and sets a global flag
                         accordingly, which is checked before sending queries.
-11-Jun-2026 FVP     v3.2.1 added Icom IC-7300Mk2 CI-V address B6 and added the 7300MK2 civSendFreqQuery2(), the following queries were 
+11-Jun-2026 FVP     v3.2.1 added Icom IC-7300Mk2 CI-V address B6 and added the 7300MK2 civSendFreqQuery2(), the following queries were
                         incrementally updated
-04-Jul-2026 ZV      v3.3.0  Added unique Controller Address for the decoder (to differentiate controllers), allowed multiple controller 
-                            addresses to be accepted by the state machine by adding CIV_CONTROLLER_ADDRESS_MATCH(b) macro, added comments 
+04-Jul-2026 ZV      v3.3.0  Added unique Controller Address for the decoder (to differentiate controllers), allowed multiple controller
+                            addresses to be accepted by the state machine by adding CIV_CONTROLLER_ADDRESS_MATCH(b) macro, added comments
                             to clarify the state machine.
 06-Jul-2026 ZV      v4.0.1  Added menuing subsystem to allow user interaction and configuration, we no longer poll a list of
                               radios, only the configured radio, and no longer hardcoded to accept all 7300, 705, 7610, 7300MK2, or R8600 (which
-                              which was done only to avoid recompilation since no CLI config menu existed).  The user can 
+                              which was done only to avoid recompilation since no CLI config menu existed).  The user can
                               now configure the radio address and baudrate via the menu system.  Now potentially other radios to be on the same bus
-                              with multiple decoder boards each board only listening to its configured target.  Added configurable polling interval 
+                              with multiple decoder boards each board only listening to its configured target.  Added configurable polling interval
                               and inactivity timeout via the menu system.  Added EEPROM persistence of settings.
+31-Jul-2026 ZV      v5.0.0  Added Elecraft KPA AuxBus decoder plumbing to the project, which is a separate decoder that runs in parallel with
+                            the Icom CIV decoder.  The AuxBus decoder is implemented as a non-standard undocumented proprietary serial protocol.
+                            It uses a GPIO interrupt on D4 to detect the start of a frame, then uses TCB0 one-shot timer to sample the bits at bit-center points.  
+                            The AuxBus decoder is used to decode the KPA AuxBus protocol, which is used by Elecraft KPA amplifiers to 
+                            communicate with the radio.  It is implemented as a state machine and can be polled for decoded bytes via 
+                            auxBusReadDecodedByte().  The AuxBus decoder can be optionally debugged via loop2() and setup2().
+                            Currently, it is not yet being used for Radio Power Supervision, but the plumbing is in place to allow it to be used 
+                            in the future.  Basic frame structure is ~1ms bit times with an 80ms (or bits) preamble of zeros, followed by 5 start bits, 8 data bits, and a stop bit.  
+                            
 */
-// REMEMBER TO UPDATE VERSION NUMBER !!!! 
-#define VERSION     "4.0.1" // software version
+// REMEMBER TO UPDATE VERSION NUMBER !!!!
+#define VERSION     "5.0.0" // software version
 
 //=====[ Settings ]===========================================================================================
 #define CIVBAUD 9600  // [baud] Serial port CIV in/out baudrate  IC-705
@@ -106,25 +115,45 @@ bool icomSM2(byte b, unsigned long * freq);  // prototype for fwd ref
 void civSendFreqQuery(); // forward declaration for CI-V frequency query sender so it can be used from loop()
 void menu_monitor();  // forward declaration for menu polling function so it can be used from loop()
 
+// these are in auxbus.cpp, but declared extern here so they can be referenced.
+extern void setup2();  // forward declaration for setup2() function so it can be used from setup()
+extern void loop2();  // forward declaration for loop2() function so it can be used from loop()
+
 // these are the global configurable menu items defined in ConfigSchema.h, must be declared extern here so they 
 // can be referenced from other files.
 extern bool gPoll_Inhibit; 
 extern int32_t gCIVAddress;
 extern int32_t gCIVBaudRate;
 
+// function to safely read a decoded byte from the AuxBus decoder, returns -1 if no byte is ready
+extern int16_t auxBusReadDecodedByte();  
+
 #define TX_INHIBIT_PIN 3 // GPIO pin to control Tx inhibit, active low (0 = Tx inhibited, 1 = Tx allowed)
 
 void setup() {
 
     Serial.begin(115200);    // Serial monitor
-    delay(2000);
     
+    // give the VSCode/PIO SerialMonitor time to connect before we start printing stuff out, otherwise we miss 
+    //the first few lines of output.
+    delay(3000);  
+
+// debug only
+// VPORTD.DIR = 0x0F; // A3-0 output, A7-4 input, D17, D16, D15, D14 are our BAND outputs, 1 = output
+// VPORTD.OUT = 0x0F; // initialize all band bits to 1 (bands off) - adjust if you want a different default state on boot
+//  VPORTD.OUT = (VPORTD.OUT & ~0x0F) | (5 & 0x0F); // push it to 20m
+    
+    Serial.print(F("\nCIV Band decoder started"));
     Serial.print(F("\nCIV Band decoder started"));
     Serial.print(F(" Version: ")); Serial.print(VERSION);
     Serial.print(F("\nCompiled on: ")); Serial.print(__DATE__); Serial.print(F(" ")); Serial.println(__TIME__);
     Serial.print(F("\nEnter tilde (~) for configuration menu\n\n"));
+    Serial.print("F_CPU = ");
+    Serial.println(F_CPU);
+ 
+    // call setup2() to initialize the AuxBus decoder and other debug features
+    setup2();
 
-    
     // Build dynamic menu structures from the schema table.
     initMenus();
 
@@ -171,6 +200,9 @@ extern int32_t gPollingInterval;
 extern int32_t gPollingInactivityTimeout;
 
 void loop() {
+
+    //loop2();  // only call if debugging needed for AuxBus decoding, otherwise comment it out to save time in normal operation
+
     byte incomingCIVByte = 0;
     unsigned long freq = 0;
     int BAND = -1;  // band number 0-13, -1 is bogus band
@@ -305,6 +337,16 @@ void loop() {
     // else no data available on Serial1, keep feeding the pig
     }
     // go do other stuff here if needed.
+    static int16_t lastAuxByte = -1;  // track last AuxBus decoded byte to avoid printing duplicates
+    int16_t auxByte = auxBusReadDecodedByte();  // poll the AuxBus decoder for any decoded bytes, if any
+    if (auxByte >= 0 && auxByte != lastAuxByte) {
+        Serial.print(F("AuxBus decoded byte: 0x"));
+        if (auxByte < 16) {
+            Serial.print('0');
+        }
+        Serial.println(auxByte, HEX);
+        lastAuxByte = auxByte;
+    }
 }
 
 bool icomSM2(byte b, unsigned long * freq) {      // state machine
